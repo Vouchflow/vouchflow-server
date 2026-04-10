@@ -1,0 +1,7 @@
+# Production: replace with vouchflow.dev and remove tls internal
+# Dev: uses self-signed cert via `tls internal`
+localhost {
+  tls internal
+
+  reverse_proxy api:3000
+}

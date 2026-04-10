@@ -1,0 +1,199 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = [pgcrypto]
+}
+
+// ─── Customer & API Key tables (§13) ─────────────────────────────────────────
+// Not defined in §14 but required for API key auth described in §13.
+// Minimal: only fields the brief directly states.
+
+model Customer {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now()) @map("created_at")
+
+  apiKeys  ApiKey[]
+  devices  Device[]
+
+  @@map("customers")
+}
+
+// §13: Hash-stored, scoped (write / read), 14-day rotation overlap.
+// SHA-256(key) stored, never raw key.
+model ApiKey {
+  id         String   @id @default(cuid())
+  customerId String   @map("customer_id")
+  keyHash    String   @unique @map("key_hash")   // SHA-256 of raw key
+  scope      ApiScope
+  // §13: 14-day rotation overlap — deprecated keys remain valid until deprecatedAt + 14 days
+  deprecated    Boolean   @default(false)
+  deprecatedAt  DateTime? @map("deprecated_at")
+  lastUsedAt    DateTime? @map("last_used_at")
+  createdAt     DateTime  @default(now()) @map("created_at")
+
+  customer Customer @relation(fields: [customerId], references: [id])
+
+  @@index([customerId])
+  @@map("api_keys")
+}
+
+enum ApiScope {
+  write
+  read
+}
+
+// ─── Per-Customer Tables (§14) ────────────────────────────────────────────────
+
+model Device {
+  id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  deviceToken        String   @unique @map("device_token")
+  customerId         String   @map("customer_id")
+  publicKey          String   @map("public_key")
+  keyFingerprint     String   @map("key_fingerprint")  // links to network graph, never returned in API
+  platform           String
+  attestationVerified Boolean @default(false) @map("attestation_verified")
+  confidenceCeiling  String   @default("high") @map("confidence_ceiling")
+  strongboxBacked    Boolean? @map("strongbox_backed")
+  enrolledAt         DateTime @default(now()) @map("enrolled_at")
+  lastSeen           DateTime? @map("last_seen")
+  status             String   @default("active")
+  networkParticipant Boolean  @default(false) @map("network_participant")
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  verifications Verification[]
+  customer      Customer        @relation(fields: [customerId], references: [id])
+
+  @@index([deviceToken])
+  @@index([customerId])
+  @@index([keyFingerprint])
+  @@map("devices")
+}
+
+model Verification {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  sessionId        String    @unique @map("session_id")
+  deviceId         String?   @map("device_id") @db.Uuid
+  customerId       String    @map("customer_id")
+  challenge        String
+  challengeConsumed Boolean  @default(false) @map("challenge_consumed")
+  state            String    @default("INITIATED")
+  context          String?
+  biometricUsed    Boolean?  @map("biometric_used")
+  fallbackUsed     Boolean   @default(false) @map("fallback_used")
+  fallbackReason   String?   @map("fallback_reason")
+  confidence       String?
+  expiresAt        DateTime  @map("expires_at")
+  retrySessionId   String?   @map("retry_session_id")
+  completedAt      DateTime? @map("completed_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  // Fallback OTP fields (stored on same record — no separate table specified in brief)
+  otpHash        String?   @map("otp_hash")    // SHA-256 of OTP
+  otpExpiresAt   DateTime? @map("otp_expires_at")
+  otpAttempts    Int       @default(0) @map("otp_attempts")
+  otpEmailHash   String?   @map("otp_email_hash")  // client-hashed email per §7
+  otpCompletedAt DateTime? @map("otp_completed_at")
+  // Fallback signals captured at completion
+  ipAddress      String?   @map("ip_address")
+  fallbackTimeToCompleteSeconds Int? @map("fallback_time_to_complete_seconds")
+
+  device Device? @relation(fields: [deviceId], references: [id])
+
+  @@index([sessionId])
+  @@index([customerId])
+  @@map("verifications")
+}
+
+// ─── Network Graph Tables (§14) ──────────────────────────────────────────────
+
+model NetworkDevice {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  keyFingerprint          String   @unique @map("key_fingerprint")
+  firstSeen               DateTime @default(now()) @map("first_seen")
+  lastSeen                DateTime @default(now()) @map("last_seen")
+  platform                String
+  strongboxBacked         Boolean? @map("strongbox_backed")
+  attestationEverVerified Boolean  @default(false) @map("attestation_ever_verified")
+  totalVerifications      Int      @default(0) @map("total_verifications")  // denormalized
+  customerCount           Int      @default(0) @map("customer_count")       // denormalized
+  riskScore               Int      @default(0) @map("risk_score")           // 0-100, recomputed async
+  anomalyFlags            String[] @default([]) @map("anomaly_flags")
+  networkJoinedAt         DateTime? @map("network_joined_at")               // null until opt-in
+  createdAt               DateTime @default(now()) @map("created_at")
+
+  events NetworkEvent[]
+
+  @@index([keyFingerprint])
+  @@index([riskScore])
+  @@index([customerCount])
+  @@map("network_devices")
+}
+
+model NetworkEvent {
+  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  networkDeviceId String   @map("network_device_id") @db.Uuid
+  customerId      String   @map("customer_id")  // which app, never exposed cross-customer
+  eventType       String   @map("event_type")   // enrollment | verification | reinstall | key_invalidated
+  confidence      String?
+  biometricUsed   Boolean? @map("biometric_used")
+  fallbackUsed    Boolean  @default(false) @map("fallback_used")
+  anomalyScore    Int      @default(0) @map("anomaly_score")
+  occurredAt      DateTime @default(now()) @map("occurred_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  networkDevice NetworkDevice @relation(fields: [networkDeviceId], references: [id])
+
+  @@index([networkDeviceId])
+  @@index([occurredAt])
+  @@map("network_events")
+}
+
+// ─── Idempotency keys (§7 POST /v1/enroll — 24h window) ─────────────────────
+// Stored in Redis at runtime, but also persisted to DB for crash recovery.
+model IdempotencyRecord {
+  id           String   @id @default(cuid())
+  key          String   @unique
+  responseJson String   @map("response_json")  // original response body
+  createdAt    DateTime @default(now()) @map("created_at")
+  expiresAt    DateTime @map("expires_at")
+
+  @@index([key])
+  @@map("idempotency_records")
+}
+
+// ─── Webhook config (§7 Webhooks) ────────────────────────────────────────────
+// Webhook secrets are stored encrypted (pgp_sym_encrypt via pgcrypto), not hashed.
+// Unlike API keys (hash is sufficient to verify), HMAC signing requires the raw secret.
+// The secret is shown to the customer once at creation, then only stored encrypted.
+// Decryption key: WEBHOOK_SECRET_ENCRYPTION_KEY env var (32-byte hex).
+model WebhookEndpoint {
+  id               String   @id @default(cuid())
+  customerId       String   @map("customer_id")
+  url              String
+  secretEncrypted  Bytes    @map("secret_encrypted")  // pgp_sym_encrypt(raw_secret, key)
+  createdAt        DateTime @default(now()) @map("created_at")
+
+  @@index([customerId])
+  @@map("webhook_endpoints")
+}
+
+// ─── Webhook delivery log (for retry tracking) ───────────────────────────────
+model WebhookDelivery {
+  id         String   @id @default(cuid())
+  endpointId String   @map("endpoint_id")
+  event      String
+  payload    String
+  status     String   @default("pending")  // pending | delivered | failed
+  attempts   Int      @default(0)
+  lastAttemptAt DateTime? @map("last_attempt_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@index([endpointId])
+  @@index([status])
+  @@map("webhook_deliveries")
+}
