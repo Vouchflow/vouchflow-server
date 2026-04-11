@@ -33,7 +33,7 @@ primary_region = "iad"
   NODE_ENV    = "production"
   API_VERSION = "2026-04-01"
   API_HOST    = "0.0.0.0"
-  PORT        = "8080"
+  PORT        = "80"
 
 [[vm]]
   memory   = "1gb"
@@ -41,7 +41,7 @@ primary_region = "iad"
   cpus     = 1
 
 [http_service]
-  internal_port        = 8080
+  internal_port        = 80
   force_https          = true
   auto_stop_machines   = false
   auto_start_machines  = true
