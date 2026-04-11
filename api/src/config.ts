@@ -1,5 +1,5 @@
 export const config = {
-  port: parseInt(process.env.API_PORT ?? process.env.PORT ?? '3000', 10),
+  port: parseInt(process.env.API_PORT ?? process.env.PORT ?? '80', 10),
   host: process.env.API_HOST ?? '0.0.0.0',
   apiVersion: process.env.API_VERSION ?? '2026-04-01',
   databaseUrl: requireEnv('DATABASE_URL'),

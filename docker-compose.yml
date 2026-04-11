@@ -10,7 +10,7 @@ services:
         condition: service_healthy
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "80:80"
 
   worker:
     build:
