@@ -20,10 +20,11 @@ app = "vouchflow-api"
 primary_region = "iad"
 
 [build]
+  dockerfile = "api/Dockerfile"
 
 [deploy]
   # Runs inside the production container before traffic is shifted to new machines.
-  # Requires prisma in dependencies (not devDependencies) — see package.json.
+  # Requires prisma in dependencies (not devDependencies) — see api/package.json.
   release_command = "npx prisma migrate deploy"
 
 [processes]
@@ -42,12 +43,12 @@ primary_region = "iad"
   cpus     = 1
 
 [http_service]
-  internal_port       = 8080
-  force_https         = true
-  auto_stop_machines  = false
-  auto_start_machines = true
+  internal_port        = 8080
+  force_https          = true
+  auto_stop_machines   = false
+  auto_start_machines  = true
   min_machines_running = 1
-  processes           = ["app"]
+  processes            = ["app"]
 
   [[http_service.checks]]
     grace_period = "10s"
