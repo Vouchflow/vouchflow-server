@@ -1,23 +1,57 @@
-# fly.toml app configuration file generated for vouchflow-server on 2026-04-11T15:18:04Z
+# Fly.io application configuration for vouchflow-server
+# https://fly.io/docs/reference/configuration/
 #
-# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+# First-time setup:
+#   fly secrets set \
+#     DATABASE_URL="postgres://..." \
+#     REDIS_URL="redis://..." \
+#     INTERNAL_HMAC_SECRET="$(openssl rand -hex 32)" \
+#     WEBHOOK_SECRET_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+#     RESEND_API_KEY="re_..." \
+#     APPLE_TEAM_ID="..." \
+#     APPLE_BUNDLE_ID="..." \
+#     GOOGLE_CLOUD_PROJECT_NUMBER="..."
 #
+# Managed Postgres:  fly postgres create --name vouchflow-db
+# Managed Redis:     upstash.com (free tier)
 
-app = 'vouchflow-server'
-primary_region = 'iad'
+app = "vouchflow-server"
+primary_region = "iad"
 
 [build]
 
-[http_service]
-  internal_port = 8080
-  force_https = true
-  auto_stop_machines = 'stop'
-  auto_start_machines = true
-  min_machines_running = 0
-  processes = ['app']
+[deploy]
+  # Runs inside the production container before traffic is shifted to new machines.
+  # Requires prisma in dependencies (not devDependencies) — see api/package.json.
+  release_command = "npx prisma migrate deploy"
+
+[processes]
+  app    = "node dist/index.js"
+  worker = "node dist/workers/index.js"
+
+[env]
+  NODE_ENV    = "production"
+  API_VERSION = "2026-04-01"
+  API_HOST    = "0.0.0.0"
+  PORT        = "8080"
 
 [[vm]]
-  memory = '1gb'
-  cpu_kind = 'shared'
-  cpus = 1
-  memory_mb = 1024
+  memory   = "1gb"
+  cpu_kind = "shared"
+  cpus     = 1
+
+[http_service]
+  internal_port        = 8080
+  force_https          = true
+  auto_stop_machines   = false
+  auto_start_machines  = true
+  min_machines_running = 1
+  processes            = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval     = "30s"
+    method       = "GET"
+    path         = "/health"
+    protocol     = "http"
+    timeout      = "5s"
