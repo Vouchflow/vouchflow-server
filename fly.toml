@@ -16,7 +16,7 @@
 # Managed Postgres:  fly postgres create --name vouchflow-db
 # Managed Redis:     fly ext upstash redis create
 
-app = "vouchflow-api"
+app = "app-damp-field-2104"
 primary_region = "iad"
 
 [build]
