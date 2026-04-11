@@ -33,7 +33,9 @@ export async function buildApp() {
   await fastify.register(deviceRoute, { prefix: '/v1' })
 
   // ── Health ─────────────────────────────────────────────────────────────────
-  fastify.get('/health', async () => ({ status: 'ok' }))
+  // Exempt from rate limiting — rate limiter uses Redis, which may be
+  // temporarily unavailable. Health must respond independently.
+  fastify.get('/health', { config: { rateLimit: false } }, async () => ({ status: 'ok' }))
 
   return fastify
 }
