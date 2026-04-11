@@ -20,7 +20,6 @@ app = "vouchflow-api"
 primary_region = "iad"
 
 [build]
-  dockerfile = "api/Dockerfile"
 
 [deploy]
   # Runs inside the production container before traffic is shifted to new machines.

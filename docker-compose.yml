@@ -2,7 +2,6 @@ services:
   api:
     build:
       context: .
-      dockerfile: api/Dockerfile
     env_file: .env
     depends_on:
       postgres:
@@ -16,7 +15,6 @@ services:
   worker:
     build:
       context: .
-      dockerfile: api/Dockerfile
     command: ["node", "dist/workers/index.js"]
     env_file: .env
     depends_on:
