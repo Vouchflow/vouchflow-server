@@ -21,6 +21,7 @@ RUN npm ci --omit=dev
 COPY api/prisma ./prisma
 RUN npx prisma generate
 COPY --from=builder /app/dist ./dist
+COPY api/public ./public
 
 # Default entrypoint: API server.
 # Worker uses: docker-compose override with CMD ["node", "dist/workers/index.js"]

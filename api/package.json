@@ -13,12 +13,17 @@
     "db:studio": "prisma studio"
   },
   "dependencies": {
+    "@fastify/cookie": "^9.4.0",
     "@fastify/rate-limit": "^9.1.0",
+    "@fastify/session": "^10.9.0",
+    "@fastify/static": "^7.0.4",
     "@prisma/client": "^5.22.0",
     "bullmq": "^5.13.0",
+    "cbor-x": "^1.5.9",
     "fastify": "^4.28.1",
     "fastify-plugin": "^4.5.1",
     "ioredis": "^5.4.1",
+    "jose": "^5.9.6",
     "prisma": "^5.22.0",
     "resend": "^4.0.0",
     "zod": "^3.23.8"

@@ -15,8 +15,17 @@ datasource db {
 // Minimal: only fields the brief directly states.
 
 model Customer {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now()) @map("created_at")
+  id                String    @id @default(cuid())
+  email             String?   @unique
+  sandboxWriteKey   String?   @unique @map("sandbox_write_key")
+  sandboxReadKey    String?   @unique @map("sandbox_read_key")
+  webhookSecret     String?   @map("webhook_secret")
+  orgName           String?   @map("org_name")
+  billingEmail      String?   @map("billing_email")
+  minimumConfidence String?   @map("minimum_confidence")
+  networkOptIn      Boolean   @default(false) @map("network_opt_in")
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
 
   apiKeys  ApiKey[]
   devices  Device[]
@@ -102,6 +111,8 @@ model Verification {
   // Fallback signals captured at completion
   ipAddress      String?   @map("ip_address")
   fallbackTimeToCompleteSeconds Int? @map("fallback_time_to_complete_seconds")
+  // Computed from plaintext email at initiation (email itself is not persisted)
+  disposableEmailDomain Boolean? @map("disposable_email_domain")
 
   device Device? @relation(fields: [deviceId], references: [id])
 
@@ -176,6 +187,7 @@ model WebhookEndpoint {
   id               String   @id @default(cuid())
   customerId       String   @map("customer_id")
   url              String
+  events           String[] @default([])
   secretEncrypted  Bytes    @map("secret_encrypted")  // pgp_sym_encrypt(raw_secret, key)
   createdAt        DateTime @default(now()) @map("created_at")
 

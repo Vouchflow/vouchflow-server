@@ -6,6 +6,10 @@ export const config = {
   redisUrl: process.env.REDIS_URL ?? 'redis://localhost:6379',
   internalHmacSecret: requireEnv('INTERNAL_HMAC_SECRET'),
   nodeEnv: process.env.NODE_ENV ?? 'development',
+  sessionSecret: requireEnv('SESSION_SECRET'),
+  resendApiKey: requireEnv('RESEND_API_KEY'),
+  webBaseUrl: process.env.WEB_BASE_URL ?? 'https://vouchflow.dev',
+  adminKey: requireEnv('ADMIN_KEY'),
 } as const
 
 function requireEnv(key: string): string {
