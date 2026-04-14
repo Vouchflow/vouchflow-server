@@ -8,6 +8,7 @@ import { makeApiKeyAuthPlugin } from '../plugins/apiKeyAuth.js'
 import { computeConfidence } from '../services/confidence.js'
 import { dispatchWebhook } from '../services/webhooks.js'
 import { generateOtp, hashOtp, verifyOtp, sendOtp, OTP_EXPIRY_MINUTES, OTP_MAX_ATTEMPTS } from '../services/otp.js'
+import { isDisposableEmailDomain } from '../services/disposableEmail.js'
 import { anomalyQueue } from '../lib/queues.js'
 import { config } from '../config.js'
 
@@ -392,6 +393,7 @@ const route: FastifyPluginAsync = async (fastify) => {
             otpExpiresAt,
             otpAttempts: 0,
             otpEmailHash: body.email_hash,
+            disposableEmailDomain: isDisposableEmailDomain(body.email),
             ipAddress: request.ip,
             // Store fallback_session_id in retrySessionId field (reusing for fallback tracking)
             retrySessionId: fallbackSessionId,
@@ -606,7 +608,7 @@ async function handleFallbackComplete(
     session_state: 'FALLBACK_COMPLETE',
     fallback_signals: {
       ip_consistent: session.ipAddress === request.ip,
-      disposable_email_domain: false,  // TODO: integrate disposable domain check
+      disposable_email_domain: session.disposableEmailDomain ?? false,
       device_has_prior_verifications: false, // populated from network_devices if device enrolled
       email_domain_age_days: null,     // TODO: implement domain age lookup
       otp_attempts: newAttempts,

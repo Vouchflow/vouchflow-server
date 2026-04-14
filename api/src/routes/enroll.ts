@@ -19,7 +19,7 @@ const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 
 const AttestationSchema = z.object({
   token: z.string(),
-  key_id: z.string(),
+  key_id: z.string().nullish(),
 })
 
 const EnrollRequestSchema = z.object({
@@ -110,7 +110,8 @@ const route: FastifyPluginAsync = async (fastify) => {
           const result = await validateAttestation({
             platform: body.platform,
             token: body.attestation.token,
-            keyId: body.attestation.key_id,
+            keyId: body.attestation.key_id ?? null,
+            nonce: body.idempotency_key,
           })
           attestationVerified = result.verified
         } catch {
