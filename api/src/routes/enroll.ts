@@ -26,9 +26,10 @@ const EnrollRequestSchema = z.object({
   idempotency_key: z.string().min(1),
   platform: z.enum(['ios', 'android', 'web']),
   reason: z.enum(['fresh_enrollment', 'reinstall', 'key_invalidated', 'corrupted']),
-  attestation: AttestationSchema.nullable(),
+  attestation: AttestationSchema.nullish(),
   public_key: z.string().min(1),
-  device_token: z.string().nullable(),
+  device_token: z.string().nullish(),
+  strongbox_backed: z.boolean().nullish(),
 })
 
 type EnrollRequest = z.infer<typeof EnrollRequestSchema>
@@ -136,6 +137,7 @@ const route: FastifyPluginAsync = async (fastify) => {
           platform,
           attestationVerified,
           confidenceCeiling,
+          strongboxBacked: body.strongbox_backed ?? null,
           enrolledAt: new Date(),
           lastSeen: new Date(),
           status: 'active',
@@ -145,14 +147,15 @@ const route: FastifyPluginAsync = async (fastify) => {
           keyFingerprint,
           attestationVerified,
           confidenceCeiling,
+          strongboxBacked: body.strongbox_backed ?? null,
           lastSeen: new Date(),
           status: 'active',
         },
       })
 
       // ── Network graph: enrollment event ──────────────────────────────────
-      // §15 Write Path step 3: only if customer is network participant
-      if (device.networkParticipant) {
+      // §15 Write Path step 3: only if customer is network participant; never in sandbox
+      if (device.networkParticipant && !request.isSandbox) {
         await writeNetworkEvent({
           keyFingerprint,
           customerId: request.customerId,

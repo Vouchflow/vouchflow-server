@@ -16,6 +16,7 @@ declare module 'fastify' {
     customerId: string
     apiKeyId: string
     apiKeyDeprecated: boolean
+    isSandbox: boolean
   }
 }
 
@@ -44,6 +45,33 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
         return reply.code(401).send({ error: { code: 'missing_api_key', message: 'Authorization header required.' } })
       }
 
+      // §13: Sandbox keys are stored as plaintext on Customer; live keys are SHA-256 hashed in ApiKey.
+      // Sandbox write keys: vsk_sandbox_  (not vsk_sandbox_read_)
+      // Sandbox read keys:  vsk_sandbox_read_
+      if (rawKey.startsWith('vsk_sandbox_')) {
+        const isSandboxRead = rawKey.startsWith('vsk_sandbox_read_')
+        const sandboxScope: ApiScope = isSandboxRead ? 'read' : 'write'
+
+        if (sandboxScope !== requiredScope) {
+          return reply.code(403).send({ error: { code: 'insufficient_scope', message: `This endpoint requires a ${requiredScope}-scoped API key.` } })
+        }
+
+        const customer = isSandboxRead
+          ? await prisma.customer.findUnique({ where: { sandboxReadKey: rawKey } })
+          : await prisma.customer.findUnique({ where: { sandboxWriteKey: rawKey } })
+
+        if (!customer) {
+          return reply.code(401).send({ error: { code: 'invalid_api_key', message: 'Invalid API key.' } })
+        }
+
+        request.customerId = customer.id
+        request.apiKeyId = `sandbox:${customer.id}`
+        request.apiKeyDeprecated = false
+        request.isSandbox = true
+        return
+      }
+
+      // Live key path — SHA-256 hashed
       const keyHash = hashApiKey(rawKey)
       const apiKey = await prisma.apiKey.findUnique({
         where: { keyHash },
@@ -68,6 +96,7 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
       request.customerId = apiKey.customerId
       request.apiKeyId = apiKey.id
       request.apiKeyDeprecated = apiKey.deprecated
+      request.isSandbox = false
 
       // §13: SDK detects Vouchflow-Key-Deprecated header
       if (apiKey.deprecated) {

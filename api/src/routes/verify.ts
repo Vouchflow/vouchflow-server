@@ -36,7 +36,7 @@ const CompleteSchema = z.object({
 })
 
 const FallbackSchema = z.object({
-  device_token: z.string().nullable(),
+  device_token: z.string().nullish(),
   email: z.string().email(),       // plaintext — used for OTP delivery, not stored
   email_hash: z.string().min(1),   // SHA-256 of email — stored for rate limiting
   reason: z.enum([
@@ -55,7 +55,7 @@ const FallbackSchema = z.object({
 })
 
 const FallbackCompleteSchema = z.object({
-  device_token: z.string().nullable(),
+  device_token: z.string().nullish(),
   otp: z.string().length(6),
 })
 
@@ -253,7 +253,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         await prisma.device.update({ where: { id: device.id }, data: { lastSeen: new Date() } })
 
         // ── Network graph write (§15) ─────────────────────────────────────────
-        if (signatureValid && device.networkParticipant) {
+        if (signatureValid && device.networkParticipant && !request.isSandbox) {
           await writeNetworkVerificationEvent({
             device,
             customerId: session.customerId,
@@ -401,8 +401,8 @@ const route: FastifyPluginAsync = async (fastify) => {
           })
         }
 
-        // Handle device_token null case (§7: may be null if enrollment failed)
-        if (body.device_token === null) {
+        // Handle device_token null/absent case (§7: may be null if enrollment failed)
+        if (body.device_token == null) {
           // Create minimal device record flagged enrollment_failed, link to session
           const failedDevice = await prisma.device.upsert({
             where: { deviceToken: `dvt_failed_${session_id}` },
