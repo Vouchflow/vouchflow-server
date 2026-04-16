@@ -24,7 +24,6 @@ const FALLBACK_RATE = { max: 3, window: '24 hours' }
 // ─── Request schemas ──────────────────────────────────────────────────────────
 
 const PostVerifySchema = z.object({
-  customer_id: z.string().min(1),
   device_token: z.string().min(1),
   context: z.enum(['signup', 'login', 'sensitive_action']),
   minimum_confidence: z.enum(['high', 'medium', 'low']).optional(),
@@ -83,15 +82,11 @@ const route: FastifyPluginAsync = async (fastify) => {
         }
         const body = parsed.data
 
-        if (body.customer_id !== request.customerId) {
-          return reply.code(403).send({ error: { code: 'customer_id_mismatch', message: 'customer_id does not match the authenticated API key.' } })
-        }
-
         const device = await prisma.device.findUnique({ where: { deviceToken: body.device_token } })
         if (!device) {
           return reply.code(404).send({ error: { code: 'device_not_found', message: 'Device token not found.' } })
         }
-        if (device.customerId !== body.customer_id) {
+        if (device.customerId !== request.customerId) {
           return reply.code(403).send({ error: { code: 'device_not_owned', message: 'Device does not belong to this customer.' } })
         }
         if (device.status !== 'active') {
@@ -119,7 +114,7 @@ const route: FastifyPluginAsync = async (fastify) => {
           data: {
             sessionId,
             deviceId: device.id,
-            customerId: body.customer_id,
+            customerId: request.customerId,
             challenge,
             state: 'INITIATED',
             context: body.context,

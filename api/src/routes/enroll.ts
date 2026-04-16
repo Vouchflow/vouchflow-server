@@ -24,7 +24,6 @@ const AttestationSchema = z.object({
 
 const EnrollRequestSchema = z.object({
   idempotency_key: z.string().min(1),
-  customer_id: z.string().min(1),
   platform: z.enum(['ios', 'android', 'web']),
   reason: z.enum(['fresh_enrollment', 'reinstall', 'key_invalidated', 'corrupted']),
   attestation: AttestationSchema.nullable(),
@@ -59,13 +58,6 @@ const route: FastifyPluginAsync = async (fastify) => {
         })
       }
       const body: EnrollRequest = parsed.data
-
-      // §7 Flag 3: API key must belong to stated customer_id
-      if (body.customer_id !== request.customerId) {
-        return reply.code(403).send({
-          error: { code: 'customer_id_mismatch', message: 'customer_id does not match the authenticated API key.' },
-        })
-      }
 
       // ── Idempotency check (Redis first, DB fallback) ─────────────────────
       // §7: "if seen within 24h, return original response"
@@ -138,7 +130,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         where: { deviceToken },
         create: {
           deviceToken,
-          customerId: body.customer_id,
+          customerId: request.customerId,
           publicKey: body.public_key,
           keyFingerprint,
           platform,
@@ -163,7 +155,7 @@ const route: FastifyPluginAsync = async (fastify) => {
       if (device.networkParticipant) {
         await writeNetworkEvent({
           keyFingerprint,
-          customerId: body.customer_id,
+          customerId: request.customerId,
           eventType: body.reason === 'fresh_enrollment' ? 'enrollment' : body.reason,
           platform,
           attestationVerified,
