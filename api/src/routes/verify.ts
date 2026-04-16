@@ -629,10 +629,11 @@ function verifySignature(params: {
   try {
     const verify = crypto.createVerify('SHA256')
     verify.update(Buffer.from(params.challenge, 'base64'))
-    // §6 Decision 4: EC secp256r1 keys
-    // Constant-time comparison is implicit in crypto.Verify.verify()
+    // §6 Decision 4: EC secp256r1 keys — public_key is SubjectPublicKeyInfo DER, base64-encoded.
+    // Java's PublicKey.encoded / iOS's derRepresentation both produce this format.
+    // Constant-time comparison is implicit in crypto.Verify.verify().
     return verify.verify(
-      { key: params.publicKey, format: 'pem' },
+      { key: Buffer.from(params.publicKey, 'base64'), format: 'der', type: 'spki' },
       Buffer.from(params.signature, 'base64'),
     )
   } catch {
