@@ -143,13 +143,8 @@ const route: FastifyPluginAsync = async (fastify) => {
       handler: async (request, reply) => {
         const { session_id } = request.params
 
-        const parsed = CompleteSchema.safeParse(request.body)
-        if (!parsed.success) {
-          return reply.code(400).send({ error: { code: 'invalid_request', message: parsed.error.message } })
-        }
-        const body = parsed.data
-
         // §7: "Fallback OTP submission uses same endpoint"
+        // Session state determines which schema applies, so look up the session first.
         // Primary path: { device_token, signed_challenge, biometric_used }
         // Fallback OTP path: { device_token, otp } — detected by session state (FALLBACK)
 
@@ -166,11 +161,17 @@ const route: FastifyPluginAsync = async (fastify) => {
         }
 
         // ── Step 2: State check ─────────────────────────────────────────────
-        // §7: "fallback OTP submission uses same endpoint"
-        // If session is in FALLBACK state, treat as OTP completion.
+        // If session is in FALLBACK state, treat as OTP completion (different schema).
         if (session.state === 'FALLBACK') {
           return handleFallbackComplete(session.sessionId, session, request, reply)
         }
+
+        // Biometric completion path — validate schema now that we know state is not FALLBACK.
+        const parsed = CompleteSchema.safeParse(request.body)
+        if (!parsed.success) {
+          return reply.code(400).send({ error: { code: 'invalid_request', message: parsed.error.message } })
+        }
+        const body = parsed.data
 
         if (session.state !== 'INITIATED') {
           return reply.code(409).send({
