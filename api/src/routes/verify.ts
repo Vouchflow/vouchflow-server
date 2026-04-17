@@ -154,7 +154,13 @@ const route: FastifyPluginAsync = async (fastify) => {
         // Fallback OTP path: { device_token, otp } — detected by session state (FALLBACK)
 
         // ── Step 1: Session exists ──────────────────────────────────────────
-        const session = await prisma.verification.findUnique({ where: { sessionId: session_id } })
+        let session = await prisma.verification.findUnique({ where: { sessionId: session_id } })
+        if (!session) {
+          // session_id may be a fallback session ID (fbs_...) stored in retrySessionId
+          session = await prisma.verification.findFirst({
+            where: { retrySessionId: session_id, state: 'FALLBACK' },
+          })
+        }
         if (!session) {
           return reply.code(404).send({ error: { code: 'session_not_found', message: 'Session not found.' } })
         }
@@ -163,7 +169,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         // §7: "fallback OTP submission uses same endpoint"
         // If session is in FALLBACK state, treat as OTP completion.
         if (session.state === 'FALLBACK') {
-          return handleFallbackComplete(session_id, session, request, reply)
+          return handleFallbackComplete(session.sessionId, session, request, reply)
         }
 
         if (session.state !== 'INITIATED') {
