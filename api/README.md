@@ -40,6 +40,15 @@ Authorization: Bearer vsk_live_...
 Vouchflow-API-Version: 2026-04-01
 ```
 
+### Environments and base URLs
+
+| Environment | Base URL | Key prefix |
+|---|---|---|
+| Sandbox | `https://sandbox.api.vouchflow.dev/v1` | `vsk_sandbox_` / `vsk_sandbox_read_` |
+| Production | `https://api.vouchflow.dev/v1` | `vsk_live_` / `vsk_live_read_` |
+
+Sandbox verifications are free, isolated from the network graph, and do not affect billing. The SDK selects the correct host automatically based on the `environment` setting in `VouchflowConfig` / `VouchflowConfig.kt`.
+
 If a key is within its 14-day rotation window, the response includes `Vouchflow-Key-Deprecated: true`.
 
 ---
@@ -205,7 +214,26 @@ Returns the current state of a verification session. Requires a **read-scoped** 
 
 ### `GET /v1/device/:device_token/reputation`
 
-Returns reputation data for a device. Requires a **read-scoped** key. Call from your server after receiving a `device_token` from the SDK — never from the client.
+Returns reputation data for a device, including the most recent completed verification. Requires a **read-scoped** key. This is the primary endpoint for **server-side trust** — your server calls this after receiving a `device_token` from the SDK to independently confirm that a verification just occurred and at what confidence level.
+
+**Server-side trust pattern**
+
+```
+Mobile                       Your server                    Vouchflow
+  │  verify() succeeds           │                              │
+  │  ──── {deviceToken} ────►    │                              │
+  │                              │  GET /v1/device/:token/      │
+  │                              │  reputation ──────────────►  │
+  │                              │  ◄────── {last_verification, │
+  │                              │           risk_score, ...} ──│
+  │                              │                              │
+  │                     check last_verification.completed_at    │
+  │                     is within your freshness window (e.g.   │
+  │                     30s), confidence meets your threshold,  │
+  │                     and risk_score is acceptable            │
+```
+
+Never call this endpoint from mobile — it requires a read-scoped key that must stay server-side.
 
 **Response**
 ```json
@@ -220,10 +248,18 @@ Returns reputation data for a device. Requires a **read-scoped** key. Call from 
   "device_age_days": 100,
   "platform": "ios",
   "keychain_persistent": true,
-  "network_participant": false
+  "network_participant": false,
+  "last_verification": {
+    "confidence": "high",
+    "context": "login",
+    "completed_at": "2026-04-11T12:00:00Z",
+    "biometric_used": true,
+    "fallback_used": false
+  }
 }
 ```
 
+`last_verification`: the most recent completed biometric verification for this device, or `null` if the device has never successfully verified. Use `completed_at` to confirm freshness.  
 `risk_score`: 0–100, computed asynchronously after each verification. Higher scores indicate more anomalous device behaviour.  
 `anomaly_flags`: `velocity_anomaly` | `reinstall_anomaly` | `confidence_degradation`
 

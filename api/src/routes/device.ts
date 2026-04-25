@@ -20,9 +20,7 @@ const route: FastifyPluginAsync = async (fastify) => {
     handler: async (request, reply) => {
       const { device_token } = request.params
 
-      const device = await prisma.device.findUnique({
-        where: { deviceToken: device_token },
-      })
+      const device = await prisma.device.findUnique({ where: { deviceToken: device_token } })
 
       if (!device) {
         return reply.code(404).send({ error: { code: 'device_not_found', message: 'Device token not found.' } })
@@ -33,10 +31,17 @@ const route: FastifyPluginAsync = async (fastify) => {
         return reply.code(403).send({ error: { code: 'forbidden', message: 'Device does not belong to this customer.' } })
       }
 
-      // Fetch network graph data if device has a fingerprint
-      const networkDevice = device.keyFingerprint
-        ? await prisma.networkDevice.findUnique({ where: { keyFingerprint: device.keyFingerprint } })
-        : null
+      // Fetch most recent completed verification and network graph data in parallel
+      const [recentVerification, networkDevice] = await Promise.all([
+        prisma.verification.findFirst({
+          where: { deviceId: device.id, state: 'COMPLETED' },
+          orderBy: { completedAt: 'desc' },
+          select: { confidence: true, context: true, completedAt: true, biometricUsed: true, fallbackUsed: true },
+        }),
+        device.keyFingerprint
+          ? prisma.networkDevice.findUnique({ where: { keyFingerprint: device.keyFingerprint } })
+          : null,
+      ])
 
       const now = Date.now()
       const deviceAgeDays = Math.floor((now - device.enrolledAt.getTime()) / (1000 * 60 * 60 * 24))
@@ -53,6 +58,15 @@ const route: FastifyPluginAsync = async (fastify) => {
         platform: device.platform,
         keychain_persistent: true,  // §9: iOS Keychain AfterFirstUnlock; Android AccountManager
         network_participant: device.networkParticipant,
+        last_verification: recentVerification
+          ? {
+              confidence: recentVerification.confidence,
+              context: recentVerification.context,
+              completed_at: recentVerification.completedAt!.toISOString(),
+              biometric_used: recentVerification.biometricUsed ?? false,
+              fallback_used: recentVerification.fallbackUsed,
+            }
+          : null,
       })
     },
   })
