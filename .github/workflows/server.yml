@@ -1,0 +1,99 @@
+name: Server
+
+on:
+  push:
+    branches: [main]
+    tags: ['server-v*']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: api
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: vouchflow
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: vouchflow_test
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 5432:5432
+
+      redis:
+        image: redis:7-alpine
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+        ports:
+          - 6379:6379
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - run: npm ci
+
+      - name: Generate Prisma client & validate schema
+        run: npx prisma generate
+        env:
+          DATABASE_URL: postgres://vouchflow:test@localhost:5432/vouchflow_test
+
+      - name: Run migrations
+        run: npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgres://vouchflow:test@localhost:5432/vouchflow_test
+
+      - name: TypeScript build
+        run: npm run build
+        env:
+          DATABASE_URL: postgres://vouchflow:test@localhost:5432/vouchflow_test
+
+  staging:
+    needs: ci
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment:
+      name: staging
+      url: https://vouchflow-server-staging.fly.dev
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --config fly.staging.toml --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_STAGING_API_TOKEN }}
+
+  production:
+    needs: ci
+    if: startsWith(github.ref, 'refs/tags/server-v')
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://api.vouchflow.com
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - run: flyctl deploy --remote-only
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
