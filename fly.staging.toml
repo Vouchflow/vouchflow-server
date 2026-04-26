@@ -1,0 +1,54 @@
+# Staging — auto-deploys on every push to main.
+#
+# First-time setup:
+#   fly apps create vouchflow-server-staging
+#   fly postgres create --name vouchflow-db-staging
+#   fly redis create --name vouchflow-redis-staging  # or use Upstash free tier
+#   fly secrets set -a vouchflow-server-staging \
+#     DATABASE_URL="postgres://..." \
+#     REDIS_URL="redis://..." \
+#     INTERNAL_HMAC_SECRET="$(openssl rand -hex 32)" \
+#     WEBHOOK_SECRET_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+#     RESEND_API_KEY="re_..." \
+#     APPLE_TEAM_ID="..." \
+#     APPLE_BUNDLE_ID="..." \
+#     GOOGLE_CLOUD_PROJECT_NUMBER="..."
+
+app = "vouchflow-server-staging"
+primary_region = "iad"
+
+[build]
+
+[deploy]
+  release_command = "npx prisma migrate deploy"
+
+[processes]
+  app    = "node dist/index.js"
+  worker = "node dist/workers/index.js"
+
+[env]
+  NODE_ENV    = "staging"
+  API_VERSION = "2026-04-01"
+  API_HOST    = "0.0.0.0"
+  PORT        = "80"
+
+[[vm]]
+  memory   = "256mb"
+  cpu_kind = "shared"
+  cpus     = 1
+
+[http_service]
+  internal_port        = 80
+  force_https          = true
+  auto_stop_machines   = true
+  auto_start_machines  = true
+  min_machines_running = 0
+  processes            = ["app"]
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval     = "30s"
+    method       = "GET"
+    path         = "/health"
+    protocol     = "http"
+    timeout      = "5s"
