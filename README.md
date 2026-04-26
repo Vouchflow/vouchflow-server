@@ -261,7 +261,7 @@ AAAA www.vouchflow.dev → 2a09:8280:1::ff:19e0:0
 | `FLY_STAGING_API_TOKEN` | Fly.io token scoped to `vouchflow-server-staging` |
 | `FLY_API_TOKEN` | Fly.io token scoped to `vouchflow-server` |
 
-### First-time staging setup
+### First-time staging setup (already complete — staging infra is live)
 
 ```bash
 fly apps create vouchflow-server-staging
