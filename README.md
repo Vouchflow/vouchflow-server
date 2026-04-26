@@ -1,5 +1,7 @@
 # vouchflow-server
 
+[![CI](https://github.com/vouchflow/vouchflow-server/actions/workflows/server.yml/badge.svg)](https://github.com/vouchflow/vouchflow-server/actions/workflows/server.yml)
+
 Backend for the Vouchflow device-native verification platform. Serves the Vouchflow API, web dashboard, and marketing pages from a single Fastify process.
 
 ## Stack
@@ -243,3 +245,36 @@ AAAA vouchflow.dev     → 2a09:8280:1::ff:19e0:0
 A    www.vouchflow.dev → 66.241.124.3
 AAAA www.vouchflow.dev → 2a09:8280:1::ff:19e0:0
 ```
+
+## CI / CD
+
+| Event | Action |
+|---|---|
+| Pull request to `main` | TypeScript build + Prisma schema validation |
+| Push to `main` | Build + deploy to **staging** (`vouchflow-server-staging.fly.dev`) |
+| Push tag `server-v*` | Build + deploy to **production** |
+
+### Required repository secrets
+
+| Secret | Description |
+|---|---|
+| `FLY_STAGING_API_TOKEN` | Fly.io token scoped to `vouchflow-server-staging` |
+| `FLY_API_TOKEN` | Fly.io token scoped to `vouchflow-server` |
+
+### First-time staging setup
+
+```bash
+fly apps create vouchflow-server-staging
+fly postgres create --name vouchflow-db-staging
+fly secrets set -a vouchflow-server-staging \
+  DATABASE_URL="postgres://..." \
+  REDIS_URL="redis://..." \
+  INTERNAL_HMAC_SECRET="$(openssl rand -hex 32)" \
+  WEBHOOK_SECRET_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
+  RESEND_API_KEY="re_..." \
+  APPLE_TEAM_ID="..." \
+  APPLE_BUNDLE_ID="..." \
+  GOOGLE_CLOUD_PROJECT_NUMBER="..."
+```
+
+Configure GitHub Environments named `staging` and `production` to add required reviewers and deployment protection rules.
