@@ -74,7 +74,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: staging
-      url: https://vouchflow-server-staging.fly.dev
+      url: https://sandbox.api.vouchflow.dev
 
     steps:
       - uses: actions/checkout@v4
