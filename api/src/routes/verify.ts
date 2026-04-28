@@ -234,11 +234,18 @@ const route: FastifyPluginAsync = async (fastify) => {
         }
 
         // ── Step 6: Validate signature (constant-time) ──────────────────────
-        const signatureValid = verifySignature({
+        const sigResult = verifySignature({
           publicKey: device.publicKey,
           challenge: session.challenge,
           signature: body.signed_challenge,
         })
+        const signatureValid = sigResult.valid
+        if (!signatureValid) {
+          request.log.warn(
+            { sessionId: session_id, deviceToken: device.deviceToken, sigFailReason: sigResult.reason },
+            'verifySignature failed',
+          )
+        }
 
         // ── Step 7: Transition state ─────────────────────────────────────────
         const newState = signatureValid ? 'COMPLETED' : 'FAILED'
@@ -632,19 +639,20 @@ function verifySignature(params: {
   publicKey: string
   challenge: string
   signature: string
-}): boolean {
+}): { valid: boolean; reason?: string } {
   try {
     const verify = crypto.createVerify('SHA256')
     verify.update(Buffer.from(params.challenge, 'base64'))
     // §6 Decision 4: EC secp256r1 keys — public_key is SubjectPublicKeyInfo DER, base64-encoded.
     // Java's PublicKey.encoded / iOS's derRepresentation both produce this format.
     // Constant-time comparison is implicit in crypto.Verify.verify().
-    return verify.verify(
+    const valid = verify.verify(
       { key: Buffer.from(params.publicKey, 'base64'), format: 'der', type: 'spki' },
       Buffer.from(params.signature, 'base64'),
     )
-  } catch {
-    return false
+    return valid ? { valid: true } : { valid: false, reason: 'signature_mismatch' }
+  } catch (e) {
+    return { valid: false, reason: (e as Error).message }
   }
 }
 
