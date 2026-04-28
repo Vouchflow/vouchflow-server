@@ -97,8 +97,10 @@ const route: FastifyPluginAsync = async (fastify) => {
       // ── Attestation validation ────────────────────────────────────────────
       // §7: "If attestation null/failed: accept, set attestation_verified: false,
       //      confidence_ceiling: medium"
-      let attestationVerified = false
-      if (body.attestation) {
+      // In sandbox, attestation is always treated as verified so developers can
+      // test the full confidence ladder without a Play Console-registered APK.
+      let attestationVerified = request.isSandbox
+      if (!request.isSandbox && body.attestation) {
         try {
           const result = await validateAttestation({
             platform: body.platform,
