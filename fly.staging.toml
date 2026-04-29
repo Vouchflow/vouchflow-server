@@ -45,9 +45,6 @@ primary_region = "iad"
   min_machines_running = 0
   processes            = ["app"]
 
-  # Custom domain: sandbox.api.vouchflow.dev
-  # DNS setup: CNAME sandbox.api -> vouchflow-server-staging.fly.dev
-  # Cert provisioning: fly certs add sandbox.api.vouchflow.dev -a vouchflow-server-staging
   [[http_service.checks]]
     grace_period = "10s"
     interval     = "30s"
