@@ -311,9 +311,16 @@ async function validateKeystoreAttestation(
     }
 
     // 5. Challenge: must equal our idempotency key (UTF-8 bytes).
-    if (!attestationChallenge ||
-        !crypto.timingSafeEqual(attestationChallenge, Buffer.from(input.nonce, 'utf8'))) {
-      return { verified: false, reason: 'challenge_mismatch' }
+    //    Compare length first — timingSafeEqual throws on mismatched
+    //    lengths rather than returning false, which would otherwise be
+    //    surfaced as the generic 'attestation_parse_error'.
+    {
+      const expected = Buffer.from(input.nonce, 'utf8')
+      if (!attestationChallenge ||
+          attestationChallenge.length !== expected.length ||
+          !crypto.timingSafeEqual(attestationChallenge, expected)) {
+        return { verified: false, reason: 'challenge_mismatch' }
+      }
     }
 
     // 6. AttestationApplicationId: package name + signing-cert digest. Must
@@ -457,29 +464,55 @@ function derReadValue(buf: Buffer, offset: number): Buffer | null {
   return Buffer.from(buf.subarray(valueStart, valueStart + length))
 }
 
-/** Reads the full TLV header at `offset`, returning the offset of the value
- *  bytes and their length, or null on parse error. */
+/** Reads the full TLV header at `offset`, returning the decoded tag number,
+ *  the offset of the value bytes, and the value length. Handles both
+ *  short-form (single tag byte) and long-form (low 5 bits == 0x1f, with
+ *  base-128 continuation bytes) tag encodings — the latter is used by the
+ *  context-specific EXPLICIT tags inside Keystore Attestation's
+ *  AuthorizationList (e.g. tag 709 for attestationApplicationId). For
+ *  short-form tags, the returned `tag` equals the literal first byte (so
+ *  callers checking `tag === 0x30` for SEQUENCE still work unchanged). */
 function derReadHeader(buf: Buffer, offset: number): { tag: number; valueOffset: number; length: number } | null {
   if (offset + 2 > buf.length) return null
-  const tag = buf[offset]
-  const lenByte = buf[offset + 1]
+  let pos = offset
+  const firstTagByte = buf[pos]
+  pos += 1
+
+  let tag = firstTagByte
+  if ((firstTagByte & 0x1f) === 0x1f) {
+    // Long-form tag: continuation bytes with high bit until cleared.
+    let tagNumber = 0
+    let consumed = 0
+    while (pos < buf.length) {
+      const b = buf[pos]
+      pos += 1
+      consumed += 1
+      tagNumber = (tagNumber << 7) | (b & 0x7f)
+      if ((b & 0x80) === 0) break
+      if (consumed > 4) return null  // defensive cap on tag length
+    }
+    if (consumed === 0) return null
+    tag = tagNumber
+  }
+
+  if (pos >= buf.length) return null
+  const lenByte = buf[pos]
+  pos += 1
   let length: number
-  let headerLen: number
 
   if (lenByte < 0x80) {
     length = lenByte
-    headerLen = 2
   } else {
     const numLenBytes = lenByte & 0x7f
-    if (numLenBytes === 0 || numLenBytes > 4 || offset + 2 + numLenBytes > buf.length) return null
+    if (numLenBytes === 0 || numLenBytes > 4 || pos + numLenBytes > buf.length) return null
     length = 0
     for (let i = 0; i < numLenBytes; i++) {
-      length = (length << 8) | buf[offset + 2 + i]
+      length = (length << 8) | buf[pos + i]
     }
-    headerLen = 2 + numLenBytes
+    pos += numLenBytes
   }
 
-  const valueOffset = offset + headerLen
+  const valueOffset = pos
   if (valueOffset + length > buf.length) return null
   return { tag, valueOffset, length }
 }
@@ -674,4 +707,27 @@ function parseAttestationApplicationId(
     if (d) signatureDigests.push(d)
   }
   return { packageNames, signatureDigests }
+}
+
+// ── Internals exposed for unit testing ────────────────────────────────────────
+//
+// The ASN.1 parsers above are private to the validators in production use, but
+// they're exactly the surface where a subtle off-by-one or length-confusion bug
+// could let a crafted attestation chain bypass validation. Exposing them under
+// a clearly-internal name lets the test suite hit them directly with crafted
+// DER without needing real device fixtures. Production callers should never
+// import this object — it's a stable test seam, not a public API.
+export const __test_internals__ = {
+  derReadHeader,
+  derReadValue,
+  derSplitChildren,
+  derSequenceChildren,
+  derReadEnumerated,
+  derReadOctetString,
+  encodeContextTag,
+  encodeOid,
+  extractExtension,
+  parseAttestationApplicationId,
+  parsePemBundle,
+  findAuthListField,
 }
