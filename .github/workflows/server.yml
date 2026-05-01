@@ -68,6 +68,11 @@ jobs:
         env:
           DATABASE_URL: postgres://vouchflow:test@localhost:5432/vouchflow_test
 
+      - name: Unit tests (Vitest)
+        run: npm test
+        env:
+          DATABASE_URL: postgres://vouchflow:test@localhost:5432/vouchflow_test
+
   production:
     needs: ci
     if: startsWith(github.ref, 'refs/tags/server-v')
