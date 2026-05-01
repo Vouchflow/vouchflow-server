@@ -153,7 +153,17 @@ export default async function customerRoute(fastify: FastifyInstance) {
   // Update mutable customer fields. Authenticated with ADMIN_KEY.
   fastify.patch<{
     Params: { id: string }
-    Body: { orgName?: string; billingEmail?: string; minimumConfidence?: string; networkOptIn?: boolean }
+    Body: {
+      orgName?: string
+      billingEmail?: string
+      minimumConfidence?: string
+      networkOptIn?: boolean
+      // Per-customer attestation parameters. Strings to clear (null) or set.
+      androidPackageName?: string | null
+      androidSigningKeySha256?: string | null
+      iosTeamId?: string | null
+      iosBundleId?: string | null
+    }
   }>(
     '/customers/:id',
     async (request, reply) => {
@@ -161,12 +171,49 @@ export default async function customerRoute(fastify: FastifyInstance) {
         return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
       }
 
-      const { orgName, billingEmail, minimumConfidence, networkOptIn } = request.body
+      const {
+        orgName, billingEmail, minimumConfidence, networkOptIn,
+        androidPackageName, androidSigningKeySha256, iosTeamId, iosBundleId,
+      } = request.body
+
+      // Light-touch validation — these values feed attestation comparisons,
+      // so a typo here silently caps customer confidence at medium without
+      // any obvious error. Reject obviously-malformed values up front.
+      if (androidPackageName !== undefined && androidPackageName !== null) {
+        if (!/^[a-zA-Z][\w]*(\.[a-zA-Z][\w]*)+$/.test(androidPackageName)) {
+          return reply.code(400).send({ error: { code: 'invalid_field', message: 'androidPackageName must be a reverse-DNS Java package name.' } })
+        }
+      }
+      if (androidSigningKeySha256 !== undefined && androidSigningKeySha256 !== null) {
+        const normalized = androidSigningKeySha256.replace(/[:\s]/g, '').toLowerCase()
+        if (!/^[0-9a-f]{64}$/.test(normalized)) {
+          return reply.code(400).send({ error: { code: 'invalid_field', message: 'androidSigningKeySha256 must be 64 hex characters (colons and whitespace are stripped).' } })
+        }
+      }
+      if (iosTeamId !== undefined && iosTeamId !== null) {
+        if (!/^[A-Z0-9]{10}$/.test(iosTeamId)) {
+          return reply.code(400).send({ error: { code: 'invalid_field', message: 'iosTeamId must be 10 uppercase alphanumeric characters.' } })
+        }
+      }
+      if (iosBundleId !== undefined && iosBundleId !== null) {
+        if (!/^[a-zA-Z][\w-]*(\.[a-zA-Z][\w-]*)+$/.test(iosBundleId)) {
+          return reply.code(400).send({ error: { code: 'invalid_field', message: 'iosBundleId must be a reverse-DNS bundle identifier.' } })
+        }
+      }
+
       const data: Record<string, unknown> = {}
-      if (orgName          !== undefined) data.orgName          = orgName
-      if (billingEmail     !== undefined) data.billingEmail     = billingEmail
-      if (minimumConfidence !== undefined) data.minimumConfidence = minimumConfidence
-      if (networkOptIn     !== undefined) data.networkOptIn     = networkOptIn
+      if (orgName                 !== undefined) data.orgName                 = orgName
+      if (billingEmail            !== undefined) data.billingEmail            = billingEmail
+      if (minimumConfidence       !== undefined) data.minimumConfidence       = minimumConfidence
+      if (networkOptIn            !== undefined) data.networkOptIn            = networkOptIn
+      if (androidPackageName      !== undefined) data.androidPackageName      = androidPackageName
+      if (androidSigningKeySha256 !== undefined) {
+        data.androidSigningKeySha256 = androidSigningKeySha256 === null
+          ? null
+          : androidSigningKeySha256.replace(/[:\s]/g, '').toLowerCase()
+      }
+      if (iosTeamId               !== undefined) data.iosTeamId               = iosTeamId
+      if (iosBundleId             !== undefined) data.iosBundleId             = iosBundleId
 
       if (Object.keys(data).length === 0) {
         return reply.code(400).send({ error: { code: 'no_fields', message: 'No fields to update.' } })
@@ -178,13 +225,17 @@ export default async function customerRoute(fastify: FastifyInstance) {
       })
 
       return reply.send({
-        id:              customer.id,
-        email:           customer.email,
-        orgName:         customer.orgName,
-        billingEmail:    customer.billingEmail,
-        minimumConfidence: customer.minimumConfidence,
-        networkOptIn:    customer.networkOptIn,
-        updatedAt:       customer.updatedAt,
+        id:                      customer.id,
+        email:                   customer.email,
+        orgName:                 customer.orgName,
+        billingEmail:            customer.billingEmail,
+        minimumConfidence:       customer.minimumConfidence,
+        networkOptIn:            customer.networkOptIn,
+        androidPackageName:      customer.androidPackageName,
+        androidSigningKeySha256: customer.androidSigningKeySha256,
+        iosTeamId:               customer.iosTeamId,
+        iosBundleId:             customer.iosBundleId,
+        updatedAt:               customer.updatedAt,
       })
     }
   )

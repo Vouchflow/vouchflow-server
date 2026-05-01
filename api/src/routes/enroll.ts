@@ -4,7 +4,7 @@ import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
 import { redis } from '../lib/redis.js'
 import { makeApiKeyAuthPlugin } from '../plugins/apiKeyAuth.js'
-import { validateAttestation } from '../services/attestation.js'
+import { validateAttestation, buildAttestationConfig } from '../services/attestation.js'
 import { anomalyQueue } from '../lib/queues.js'
 
 // §7 POST /v1/enroll rate limit: 10/minute per customer + IP
@@ -102,12 +102,26 @@ const route: FastifyPluginAsync = async (fastify) => {
       let attestationVerified = request.isSandbox
       if (!request.isSandbox && body.attestation) {
         try {
-          const result = await validateAttestation({
-            platform: body.platform,
-            token: body.attestation.token,
-            keyId: body.attestation.key_id ?? null,
-            nonce: body.idempotency_key,
+          // Multi-tenant: pull team_id / bundle_id / package_name from the
+          // Customer row. Falls back to env vars when unset (single-tenant
+          // legacy deployment) — see buildAttestationConfig.
+          const customer = await prisma.customer.findUnique({
+            where: { id: request.customerId },
+            select: {
+              iosTeamId: true,
+              iosBundleId: true,
+              androidPackageName: true,
+            },
           })
+          const result = await validateAttestation(
+            {
+              platform: body.platform,
+              token: body.attestation.token,
+              keyId: body.attestation.key_id ?? null,
+              nonce: body.idempotency_key,
+            },
+            buildAttestationConfig(customer),
+          )
           attestationVerified = result.verified
         } catch {
           // Non-fatal per §7

@@ -24,6 +24,16 @@ model Customer {
   billingEmail      String?   @map("billing_email")
   minimumConfidence String?   @map("minimum_confidence")
   networkOptIn      Boolean   @default(false) @map("network_opt_in")
+
+  // Per-customer attestation parameters. Set by the customer during onboarding;
+  // null means attestation isn't configured yet — the server treats that as
+  // attestation_verified=false, confidence_ceiling=medium.
+  // (§7 attestation rules; required for multi-tenant attestation validation.)
+  androidPackageName      String? @map("android_package_name")
+  androidSigningKeySha256 String? @map("android_signing_key_sha256")
+  iosTeamId               String? @map("ios_team_id")
+  iosBundleId             String? @map("ios_bundle_id")
+
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 

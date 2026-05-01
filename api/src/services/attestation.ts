@@ -5,11 +5,23 @@
 // proceeds with confidence_ceiling: "medium". This is correct production-safe
 // behaviour — not a development shortcut.
 //
-// Required env vars:
-//   iOS:     APPLE_APP_ATTEST_ROOT_CA, APPLE_TEAM_ID, APPLE_BUNDLE_ID
+// Multi-tenant: iOS team_id and bundle_id, plus the Android package name, are
+// per-customer values stored on the Customer row. Apple's App Attest root CA
+// and Google's Play Integrity decryption/verification keys remain process-wide
+// (the Apple root is a public cert; Play Integrity Classic keys are still
+// global pending the Keystore Attestation switch — see TODO below).
+//
+// Required env vars (fallback when Customer row is missing values):
+//   iOS:     APPLE_APP_ATTEST_ROOT_CA  (always env — public root cert)
+//            APPLE_TEAM_ID, APPLE_BUNDLE_ID  (single-tenant fallback)
 //   Android: GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY,
-//            GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY,
-//            ANDROID_PACKAGE_NAME
+//            GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY  (always env for now)
+//            ANDROID_PACKAGE_NAME  (single-tenant fallback)
+//
+// TODO: Replace Play Integrity Classic with Keystore Attestation. The
+// per-customer secret-sharing problem (decryption keys) only goes away when
+// we move to chain-validation against the Google Hardware Attestation root.
+// Customer.androidSigningKeySha256 is reserved for that path.
 
 import crypto from 'node:crypto'
 import { compactDecrypt, compactVerify } from 'jose'
@@ -32,16 +44,58 @@ export interface AttestationInput {
   nonce: string
 }
 
+/**
+ * Per-call attestation configuration. iOS and Android values come from the
+ * Customer row when present, falling back to process env when not — that
+ * preserves the prior single-tenant deployment shape during migration.
+ */
+export interface AttestationConfig {
+  // Apple App Attest. rootCa is a global Apple cert (env only).
+  appleRootCa?: string
+  appleTeamId?: string
+  appleBundleId?: string
+  // Play Integrity Classic. Encryption keys remain global env until the
+  // Keystore Attestation switch lands; package name is now per-customer.
+  playIntegrityDecryptionKey?: string
+  playIntegrityVerificationKey?: string
+  androidPackageName?: string
+}
+
 export interface AttestationResult {
   verified: boolean
   reason?: string
 }
 
-export async function validateAttestation(input: AttestationInput): Promise<AttestationResult> {
+/**
+ * Builds an AttestationConfig from a Customer row, layering env vars beneath
+ * for backwards compatibility with the single-tenant deployment. Pass `null`
+ * when the customer record is unavailable to use env-only.
+ */
+export function buildAttestationConfig(
+  customer: {
+    iosTeamId?: string | null
+    iosBundleId?: string | null
+    androidPackageName?: string | null
+  } | null,
+): AttestationConfig {
+  return {
+    appleRootCa: process.env.APPLE_APP_ATTEST_ROOT_CA,
+    appleTeamId: customer?.iosTeamId ?? process.env.APPLE_TEAM_ID,
+    appleBundleId: customer?.iosBundleId ?? process.env.APPLE_BUNDLE_ID,
+    playIntegrityDecryptionKey: process.env.GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY,
+    playIntegrityVerificationKey: process.env.GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY,
+    androidPackageName: customer?.androidPackageName ?? process.env.ANDROID_PACKAGE_NAME,
+  }
+}
+
+export async function validateAttestation(
+  input: AttestationInput,
+  config: AttestationConfig,
+): Promise<AttestationResult> {
   if (input.platform === 'ios') {
-    return validateAppAttest(input)
+    return validateAppAttest(input, config)
   } else if (input.platform === 'android') {
-    return validatePlayIntegrity(input)
+    return validatePlayIntegrity(input, config)
   }
   // 'web' platform has no device attestation — confidence_ceiling will be "medium"
   return { verified: false, reason: 'platform_does_not_support_attestation' }
@@ -49,10 +103,11 @@ export async function validateAttestation(input: AttestationInput): Promise<Atte
 
 // ── Apple App Attest ──────────────────────────────────────────────────────────
 
-async function validateAppAttest(input: AttestationInput): Promise<AttestationResult> {
-  const rootCa = process.env.APPLE_APP_ATTEST_ROOT_CA
-  const teamId = process.env.APPLE_TEAM_ID
-  const bundleId = process.env.APPLE_BUNDLE_ID
+async function validateAppAttest(
+  input: AttestationInput,
+  config: AttestationConfig,
+): Promise<AttestationResult> {
+  const { appleRootCa: rootCa, appleTeamId: teamId, appleBundleId: bundleId } = config
 
   if (!rootCa || !teamId || !bundleId) {
     return { verified: false, reason: 'credentials_not_configured' }
@@ -167,10 +222,15 @@ async function validateAppAttest(input: AttestationInput): Promise<AttestationRe
 // Reject tokens issued more than 5 minutes ago.
 const PLAY_INTEGRITY_MAX_AGE_MS = 5 * 60 * 1000
 
-async function validatePlayIntegrity(input: AttestationInput): Promise<AttestationResult> {
-  const decryptionKey = process.env.GOOGLE_PLAY_INTEGRITY_DECRYPTION_KEY
-  const verificationKey = process.env.GOOGLE_PLAY_INTEGRITY_VERIFICATION_KEY
-  const packageName = process.env.ANDROID_PACKAGE_NAME
+async function validatePlayIntegrity(
+  input: AttestationInput,
+  config: AttestationConfig,
+): Promise<AttestationResult> {
+  const {
+    playIntegrityDecryptionKey: decryptionKey,
+    playIntegrityVerificationKey: verificationKey,
+    androidPackageName: packageName,
+  } = config
 
   if (!decryptionKey || !verificationKey || !packageName) {
     return { verified: false, reason: 'credentials_not_configured' }
