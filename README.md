@@ -35,7 +35,7 @@ api/
       pages.ts         HTML page routes (/, /signup, /dashboard, ...)
       web.ts           GET|PATCH|POST|DELETE /web/* — dashboard data API
     services/
-      attestation.ts       Apple App Attest + Android Play Integrity
+      attestation.ts       Apple App Attest + Android Keystore Attestation
       confidence.ts        Device confidence scoring
       otp.ts               Email OTP generation and delivery
       webhooks.ts          Webhook delivery
@@ -155,7 +155,7 @@ All `/web/*` routes require an active session.
 
 | Model | Key fields |
 |---|---|
-| `Customer` | id, email, sandboxWriteKey, sandboxReadKey, webhookSecret, orgName, billingEmail, minimumConfidence, networkOptIn |
+| `Customer` | id, email, sandboxWriteKey, sandboxReadKey, webhookSecret, orgName, billingEmail, minimumConfidence, networkOptIn, androidPackageName, androidSigningKeySha256, iosTeamId, iosBundleId |
 | `ApiKey` | id, customerId, keyHash (SHA-256), scope (write/read), deprecated, deprecatedAt |
 | `Device` | id (UUID), deviceToken, publicKey, platform, attestationVerified, confidenceCeiling, strongboxBacked |
 | `Verification` | id (UUID), sessionId, deviceId, state, context, biometricUsed, fallbackUsed, confidence |
@@ -177,9 +177,10 @@ All `/web/*` routes require an active session.
 | `GOOGLE_CLIENT_SECRET` | Yes | Google OAuth client secret |
 | `GITHUB_CLIENT_ID` | Yes | GitHub OAuth client ID |
 | `GITHUB_CLIENT_SECRET` | Yes | GitHub OAuth client secret |
-| `APPLE_TEAM_ID` | Yes | Apple Developer Team ID for App Attest |
-| `APPLE_BUNDLE_ID` | Yes | App bundle ID for App Attest |
-| `GOOGLE_CLOUD_PROJECT_NUMBER` | Yes | GCP project number for Play Integrity |
+| `APPLE_APP_ATTEST_ROOT_CA` | Yes | Apple's App Attest Root CA in PEM. Public cert from [Apple's docs](https://www.apple.com/certificateauthority/private/). Same value for every customer. |
+| `GOOGLE_HARDWARE_ATTESTATION_ROOT_CA` | Yes | Google Hardware Attestation Root CA(s) in PEM (concatenate multiple roots with blank lines if you want to accept any). Public certs from [AOSP](https://android.googlesource.com/platform/system/security/+/refs/heads/main/keystore-engine/keystore_attestation_root.pem). Same value for every customer. |
+| `APPLE_TEAM_ID`, `APPLE_BUNDLE_ID` | No | Single-tenant fallback for iOS attestation when `Customer.iosTeamId`/`iosBundleId` is unset. Multi-tenant deployments leave these unset. |
+| `ANDROID_PACKAGE_NAME`, `ANDROID_SIGNING_KEY_SHA256` | No | Single-tenant fallback for Android attestation when `Customer.androidPackageName`/`androidSigningKeySha256` is unset. |
 | `NODE_ENV` | No | `development` or `production`. Default: `development` |
 | `PORT` | No | HTTP port. Default: `80` |
 | `WEB_BASE_URL` | No | Base URL for OAuth callback URLs. Default: `https://vouchflow.dev` |
@@ -226,10 +227,11 @@ fly secrets set \
   GOOGLE_CLIENT_SECRET="..." \
   GITHUB_CLIENT_ID="..." \
   GITHUB_CLIENT_SECRET="..." \
-  APPLE_TEAM_ID="..." \
-  APPLE_BUNDLE_ID="..." \
-  GOOGLE_CLOUD_PROJECT_NUMBER="..."
+  APPLE_APP_ATTEST_ROOT_CA="-----BEGIN CERTIFICATE-----..." \
+  GOOGLE_HARDWARE_ATTESTATION_ROOT_CA="-----BEGIN CERTIFICATE-----..."
 ```
+
+Per-customer attestation parameters (`Customer.androidPackageName`, `androidSigningKeySha256`, `iosTeamId`, `iosBundleId`) are set via the dashboard or `PATCH /v1/customers/:id` — no env vars needed for multi-tenant deployments.
 
 ### Custom domain
 
@@ -272,9 +274,8 @@ fly secrets set -a vouchflow-server-staging \
   INTERNAL_HMAC_SECRET="$(openssl rand -hex 32)" \
   WEBHOOK_SECRET_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
   RESEND_API_KEY="re_..." \
-  APPLE_TEAM_ID="..." \
-  APPLE_BUNDLE_ID="..." \
-  GOOGLE_CLOUD_PROJECT_NUMBER="..."
+  APPLE_APP_ATTEST_ROOT_CA="-----BEGIN CERTIFICATE-----..." \
+  GOOGLE_HARDWARE_ATTESTATION_ROOT_CA="-----BEGIN CERTIFICATE-----..."
 ```
 
 Configure GitHub Environments named `staging` and `production` to add required reviewers and deployment protection rules.

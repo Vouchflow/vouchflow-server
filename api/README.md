@@ -64,14 +64,14 @@ Registers a device. Called automatically by the iOS SDK on first launch.
   "customer_id": "cust_...",
   "platform": "ios",
   "reason": "fresh_enrollment",
-  "attestation": { "token": "...", "key_id": "..." },
+  "attestation": { "token": "...", "key_id": "...", "cert_chain": ["base64-DER-cert", "..."] },
   "public_key": "base64...",
   "device_token": null
 }
 ```
 
 `reason`: `fresh_enrollment` | `reinstall` | `key_invalidated` | `corrupted`  
-`attestation`: nullable — omit or set to `null` if App Attest is unavailable  
+`attestation`: nullable — omit or set to `null` when device-platform attestation isn't available (Simulator, very old KeyMaster, etc.). For iOS, populate `token` (App Attest CBOR object, base64) and `key_id` (App Attest credential ID). For Android, populate `cert_chain` (Keystore Attestation cert chain, leaf-first, each cert base64-DER).  
 `device_token`: include on reinstall to preserve the token; `null` on fresh enrollment
 
 **Response**
@@ -419,9 +419,10 @@ npm run worker:dev
 | `INTERNAL_HMAC_SECRET` | Yes | 32-byte hex secret for internal signing |
 | `WEBHOOK_SECRET_ENCRYPTION_KEY` | Yes | 32-byte hex key for encrypting webhook secrets at rest |
 | `RESEND_API_KEY` | Yes | Resend API key for OTP email delivery |
-| `APPLE_TEAM_ID` | Yes | Apple Developer Team ID for App Attest validation |
-| `APPLE_BUNDLE_ID` | Yes | App bundle ID for App Attest validation |
-| `GOOGLE_CLOUD_PROJECT_NUMBER` | Yes | GCP project number for Android Play Integrity validation |
+| `APPLE_APP_ATTEST_ROOT_CA` | Yes | Apple App Attest Root CA in PEM. Public cert, [Apple's docs](https://www.apple.com/certificateauthority/private/). Single value for the whole deployment. |
+| `GOOGLE_HARDWARE_ATTESTATION_ROOT_CA` | Yes | Google Hardware Attestation Root CA(s) in PEM, concatenated. Public certs, [AOSP source](https://android.googlesource.com/platform/system/security/+/refs/heads/main/keystore-engine/keystore_attestation_root.pem). |
+| `APPLE_TEAM_ID`, `APPLE_BUNDLE_ID` | No | Single-tenant fallback when `Customer.iosTeamId` / `iosBundleId` is null. |
+| `ANDROID_PACKAGE_NAME`, `ANDROID_SIGNING_KEY_SHA256` | No | Single-tenant fallback when `Customer.androidPackageName` / `androidSigningKeySha256` is null. |
 | `NODE_ENV` | No | `development` or `production`. Default: `development` |
 | `PORT` | No | HTTP port. Default: `80` |
 | `API_VERSION` | No | API version header value. Default: `2026-04-01` |
@@ -448,10 +449,11 @@ fly secrets set \
   INTERNAL_HMAC_SECRET="$(openssl rand -hex 32)" \
   WEBHOOK_SECRET_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
   RESEND_API_KEY="re_..." \
-  APPLE_TEAM_ID="..." \
-  APPLE_BUNDLE_ID="..." \
-  GOOGLE_CLOUD_PROJECT_NUMBER="..."
+  APPLE_APP_ATTEST_ROOT_CA="-----BEGIN CERTIFICATE-----..." \
+  GOOGLE_HARDWARE_ATTESTATION_ROOT_CA="-----BEGIN CERTIFICATE-----..."
 ```
+
+Per-customer attestation parameters (`Customer.androidPackageName`, `androidSigningKeySha256`, `iosTeamId`, `iosBundleId`) are configured via the dashboard — no env vars needed for multi-tenant deployments.
 
 ### Deploy
 
