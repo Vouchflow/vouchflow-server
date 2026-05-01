@@ -18,8 +18,13 @@ const ENROLL_RESPONSE_TIME_MS = 250
 const IDEMPOTENCY_TTL_SECONDS = 24 * 60 * 60
 
 const AttestationSchema = z.object({
-  token: z.string(),
+  // iOS App Attest: base64 attestation object + base64 credential ID.
+  token: z.string().nullish(),
   key_id: z.string().nullish(),
+  // Android Keystore Attestation: leaf-first certificate chain, each cert
+  // base64-encoded DER. Server walks to Google HW Attestation Root CA and
+  // parses the leaf's attestation extension.
+  cert_chain: z.array(z.string()).nullish(),
 })
 
 const EnrollRequestSchema = z.object({
@@ -116,8 +121,9 @@ const route: FastifyPluginAsync = async (fastify) => {
           const result = await validateAttestation(
             {
               platform: body.platform,
-              token: body.attestation.token,
+              token: body.attestation.token ?? null,
               keyId: body.attestation.key_id ?? null,
+              certChain: body.attestation.cert_chain ?? null,
               nonce: body.idempotency_key,
             },
             buildAttestationConfig(customer),
