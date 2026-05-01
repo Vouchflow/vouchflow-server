@@ -631,7 +631,10 @@ async function handleFallbackComplete(
 // §7 confidence ladder for minimum_confidence comparison
 const CONFIDENCE_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 }
 
-function confidenceMeets(ceiling: string, minimum: string): boolean {
+// Exported for unit testing — see __tests__/verify.confidenceMeets.test.ts.
+// `ceiling` is the device's confidence_ceiling at enrollment time, `minimum`
+// is the minimum_confidence the SDK request asked for.
+export function confidenceMeets(ceiling: string, minimum: string): boolean {
   return (CONFIDENCE_RANK[ceiling] ?? 0) >= (CONFIDENCE_RANK[minimum] ?? 0)
 }
 
