@@ -635,7 +635,10 @@ function confidenceMeets(ceiling: string, minimum: string): boolean {
   return (CONFIDENCE_RANK[ceiling] ?? 0) >= (CONFIDENCE_RANK[minimum] ?? 0)
 }
 
-function verifySignature(params: {
+// Exposed for unit testing in __tests__/verify.signature.test.ts. The
+// verifySignature function is the load-bearing crypto check on the verify
+// path — a bug here is total auth bypass — so it gets direct test coverage.
+export function verifySignature(params: {
   publicKey: string
   challenge: string
   signature: string
