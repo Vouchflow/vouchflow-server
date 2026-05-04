@@ -67,6 +67,8 @@ jobs:
 
       - name: Unit tests (Vitest)
         run: npm test
+        env:
+          DATABASE_URL: postgres://vouchflow:test@localhost:5432/vouchflow_test
 
   deploy:
     needs: ci
