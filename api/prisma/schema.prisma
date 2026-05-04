@@ -23,7 +23,7 @@ model Customer {
   orgName           String?   @map("org_name")
   billingEmail      String?   @map("billing_email")
   minimumConfidence String?   @map("minimum_confidence")
-  networkOptIn      Boolean   @default(false) @map("network_opt_in")
+  networkOptIn      Boolean   @default(true) @map("network_opt_in")
 
   // Per-customer attestation parameters. Set by the customer during onboarding;
   // null means attestation isn't configured yet — the server treats that as

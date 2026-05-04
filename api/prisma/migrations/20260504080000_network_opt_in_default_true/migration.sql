@@ -1,0 +1,11 @@
+-- Flip the column default for new customers to opted-in. The cross-app
+-- reputation graph is only useful at scale if most customers participate;
+-- defaulting to opt-out kept the graph thin. Per the Settings UI's
+-- "Private mode" toggle, opting OUT is the rare path — defaulting to TRUE
+-- aligns the schema with the UX.
+--
+-- Existing rows are NOT backfilled. Customers who signed up while the
+-- default was false explicitly accepted those terms; flipping their value
+-- silently would be a privacy/consent regression. They keep their stored
+-- value; only new customers get the new default.
+ALTER TABLE "customers" ALTER COLUMN "network_opt_in" SET DEFAULT true;
