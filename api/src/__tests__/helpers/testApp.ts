@@ -80,7 +80,7 @@ export async function cleanDb(): Promise<void> {
 /** Mint a Device row directly. Bypasses the enroll route. */
 export async function createDevice(
   customerId: string,
-  opts: { platform?: string; status?: string; enrolledAt?: Date } = {},
+  opts: { platform?: string; status?: string; enrolledAt?: Date; isSandbox?: boolean } = {},
 ) {
   return prisma.device.create({
     data: {
@@ -91,6 +91,7 @@ export async function createDevice(
       platform: opts.platform ?? 'android',
       status: opts.status ?? 'active',
       enrolledAt: opts.enrolledAt ?? new Date(),
+      isSandbox: opts.isSandbox ?? true,
     },
   })
 }
@@ -107,6 +108,7 @@ export async function createVerification(
     fallbackUsed?: boolean
     createdAt?: Date
     completedAt?: Date | null
+    isSandbox?: boolean
   } = {},
 ) {
   const createdAt = opts.createdAt ?? new Date()
@@ -124,6 +126,7 @@ export async function createVerification(
       expiresAt: new Date(createdAt.getTime() + 60_000),
       createdAt,
       completedAt: opts.completedAt === undefined ? new Date(createdAt.getTime() + 1_500) : opts.completedAt,
+      isSandbox: opts.isSandbox ?? true,
     },
   })
 }

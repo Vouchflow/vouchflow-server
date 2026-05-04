@@ -166,6 +166,43 @@ d('GET /v1/customers/:id/stats', () => {
     })
     expect(res.statusCode).toBe(401)
   })
+
+  it('env=sandbox excludes live rows; env=production excludes sandbox rows', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const sandboxDev = await createDevice(customer.id, { isSandbox: true })
+    const liveDev    = await createDevice(customer.id, { isSandbox: false })
+    await createVerification(customer.id, sandboxDev.id, { confidence: 'high', isSandbox: true })
+    await createVerification(customer.id, sandboxDev.id, { confidence: 'high', isSandbox: true })
+    await createVerification(customer.id, liveDev.id,    { confidence: 'high', isSandbox: false })
+
+    const sandboxRes = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/stats?env=sandbox`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    const sandboxBody = sandboxRes.json() as { verificationCount: number; deviceCount: number }
+    expect(sandboxBody.verificationCount).toBe(2)
+    expect(sandboxBody.deviceCount).toBe(1)
+
+    const prodRes = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/stats?env=production`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    const prodBody = prodRes.json() as { verificationCount: number; deviceCount: number }
+    expect(prodBody.verificationCount).toBe(1)
+    expect(prodBody.deviceCount).toBe(1)
+  })
+
+  it('rejects an unknown env value', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/stats?env=staging`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect(res.statusCode).toBe(400)
+  })
 })
 
 d('GET /v1/verifications', () => {
@@ -272,6 +309,29 @@ d('GET /v1/verifications', () => {
       headers: { authorization: `Bearer ${a.sandboxWriteKey}` },
     })
     expect((res.json() as { rows: unknown[] }).rows.length).toBe(0)
+  })
+
+  it('env=sandbox returns only sandbox rows; env=production returns only live rows', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const sandboxDev = await createDevice(customer.id, { isSandbox: true })
+    const liveDev    = await createDevice(customer.id, { isSandbox: false })
+    await createVerification(customer.id, sandboxDev.id, { isSandbox: true })
+    await createVerification(customer.id, liveDev.id,    { isSandbox: false })
+    await createVerification(customer.id, liveDev.id,    { isSandbox: false })
+
+    const sandboxRes = await app.inject({
+      method: 'GET',
+      url: '/v1/verifications?env=sandbox',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((sandboxRes.json() as { rows: unknown[] }).rows.length).toBe(1)
+
+    const prodRes = await app.inject({
+      method: 'GET',
+      url: '/v1/verifications?env=production',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((prodRes.json() as { rows: unknown[] }).rows.length).toBe(2)
   })
 })
 

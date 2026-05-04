@@ -83,6 +83,9 @@ model Device {
   lastSeen           DateTime? @map("last_seen")
   status             String   @default("active")
   networkParticipant Boolean  @default(false) @map("network_participant")
+  // True when enrolled with a sandbox key, false for live keys. The dashboard
+  // env toggle filters on this so production view doesn't include test data.
+  isSandbox          Boolean  @default(true) @map("is_sandbox")
   createdAt          DateTime @default(now()) @map("created_at")
 
   verifications Verification[]
@@ -91,6 +94,7 @@ model Device {
   @@index([deviceToken])
   @@index([customerId])
   @@index([keyFingerprint])
+  @@index([customerId, isSandbox])
   @@map("devices")
 }
 
@@ -123,11 +127,15 @@ model Verification {
   fallbackTimeToCompleteSeconds Int? @map("fallback_time_to_complete_seconds")
   // Computed from plaintext email at initiation (email itself is not persisted)
   disposableEmailDomain Boolean? @map("disposable_email_domain")
+  // True when initiated via a sandbox key, false for live keys. The dashboard
+  // env toggle filters on this so production view doesn't include test data.
+  isSandbox             Boolean  @default(true) @map("is_sandbox")
 
   device Device? @relation(fields: [deviceId], references: [id])
 
   @@index([sessionId])
   @@index([customerId])
+  @@index([customerId, isSandbox])
   @@map("verifications")
 }
 

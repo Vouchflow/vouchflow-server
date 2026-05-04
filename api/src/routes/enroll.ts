@@ -163,6 +163,7 @@ const route: FastifyPluginAsync = async (fastify) => {
           enrolledAt: new Date(),
           lastSeen: new Date(),
           status: 'active',
+          isSandbox: request.isSandbox,
         },
         update: {
           publicKey: body.public_key,
@@ -172,6 +173,7 @@ const route: FastifyPluginAsync = async (fastify) => {
           strongboxBacked: body.strongbox_backed ?? null,
           lastSeen: new Date(),
           status: 'active',
+          isSandbox: request.isSandbox,
         },
       })
 

@@ -119,6 +119,7 @@ const route: FastifyPluginAsync = async (fastify) => {
             state: 'INITIATED',
             context: body.context,
             expiresAt,
+            isSandbox: request.isSandbox,
           },
         })
 
@@ -205,6 +206,7 @@ const route: FastifyPluginAsync = async (fastify) => {
               state: 'INITIATED',
               context: session.context,
               expiresAt: retryExpiresAt,
+              isSandbox: session.isSandbox,
             },
           })
           await prisma.verification.update({
@@ -427,6 +429,7 @@ const route: FastifyPluginAsync = async (fastify) => {
               keyFingerprint: '',
               platform: 'unknown',
               status: 'enrollment_failed',
+              isSandbox: session.isSandbox,
             },
             update: {},
           })

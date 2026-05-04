@@ -11,8 +11,15 @@ import { makeApiKeyAuthPlugin } from '../plugins/apiKeyAuth.js'
 
 const RANGE_DAYS: Record<string, number> = { '1d': 1, '7d': 7, '30d': 30, '90d': 90 }
 
+// Dashboard env toggle. Filters Device/Verification rows on is_sandbox.
+// Defaults to 'sandbox' since dashboard sessions start in sandbox mode and
+// the sandbox/live data sets are completely disjoint — there's no useful
+// "show both" view.
+const EnvFilter = z.enum(['sandbox', 'production']).optional().default('sandbox')
+
 const StatsQuery = z.object({
   range: z.enum(['1d', '7d', '30d', '90d']).optional().default('7d'),
+  env:   EnvFilter,
 })
 
 const VerificationsQuery = z.object({
@@ -20,6 +27,7 @@ const VerificationsQuery = z.object({
   offset:     z.coerce.number().int().min(0).optional().default(0),
   confidence: z.enum(['high', 'medium', 'low']).optional(),
   platform:   z.enum(['ios', 'android', 'web']).optional(),
+  env:        EnvFilter,
 })
 
 const route: FastifyPluginAsync = async (fastify) => {
@@ -32,21 +40,22 @@ const route: FastifyPluginAsync = async (fastify) => {
   // for the chart. Scoped to the auth'd customer; ignores the :id param's
   // value (uses request.customerId from auth) so a leaked URL can't read
   // another customer's stats.
-  fastify.get<{ Querystring: { range?: string } }>(
+  fastify.get<{ Querystring: { range?: string; env?: string } }>(
     '/customers/:id/stats',
     {
       config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
-      schema: { querystring: { type: 'object', properties: { range: { type: 'string' } } } },
+      schema: { querystring: { type: 'object', properties: { range: { type: 'string' }, env: { type: 'string' } } } },
     },
     async (request, reply) => {
       const parsed = StatsQuery.safeParse(request.query)
       if (!parsed.success) {
         return reply.code(400).send({ error: { code: 'invalid_request', message: parsed.error.message } })
       }
-      const { range } = parsed.data
+      const { range, env } = parsed.data
       const days = RANGE_DAYS[range]
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
       const customerId = request.customerId
+      const isSandbox = env === 'sandbox'
 
       const [
         verificationCount,
@@ -56,7 +65,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         dailyRows,
       ] = await Promise.all([
         prisma.verification.count({
-          where: { customerId, createdAt: { gte: since }, state: { in: ['COMPLETED', 'FALLBACK_COMPLETE'] } },
+          where: { customerId, isSandbox, createdAt: { gte: since }, state: { in: ['COMPLETED', 'FALLBACK_COMPLETE'] } },
         }),
         // Active devices, deduped by keyFingerprint. The enroll route upserts
         // on deviceToken, so app reinstalls or test runs that don't send a
@@ -64,14 +73,14 @@ const route: FastifyPluginAsync = async (fastify) => {
         // attestation key is more durable than the token, so distinct
         // fingerprints is closer to "physical devices we've seen."
         prisma.device.findMany({
-          where:    { customerId, status: 'active' },
+          where:    { customerId, isSandbox, status: 'active' },
           select:   { keyFingerprint: true },
           distinct: ['keyFingerprint'],
         }),
         // Confidence breakdown for the percentage card.
         prisma.verification.groupBy({
           by: ['confidence'],
-          where: { customerId, createdAt: { gte: since }, confidence: { not: null } },
+          where: { customerId, isSandbox, createdAt: { gte: since }, confidence: { not: null } },
           _count: { _all: true },
         }),
         // Average completion latency for the duration card. Uses raw SQL
@@ -81,6 +90,7 @@ const route: FastifyPluginAsync = async (fastify) => {
           SELECT AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) * 1000) AS avg_ms
           FROM verifications
           WHERE customer_id = ${customerId}
+            AND is_sandbox = ${isSandbox}
             AND created_at >= ${since}
             AND completed_at IS NOT NULL
             AND state IN ('COMPLETED', 'FALLBACK_COMPLETE')
@@ -93,6 +103,7 @@ const route: FastifyPluginAsync = async (fastify) => {
             SUM(CASE WHEN confidence IN ('medium', 'low') THEN 1 ELSE 0 END) AS low
           FROM verifications
           WHERE customer_id = ${customerId}
+            AND is_sandbox = ${isSandbox}
             AND created_at >= ${since}
             AND state IN ('COMPLETED', 'FALLBACK_COMPLETE')
           GROUP BY d
@@ -122,7 +133,7 @@ const route: FastifyPluginAsync = async (fastify) => {
   // Paginated list of recent verifications. The `:id` from the URL is not
   // used — scope comes from request.customerId. Filters: confidence,
   // platform (joined via device).
-  fastify.get<{ Querystring: { limit?: string; offset?: string; confidence?: string; platform?: string } }>(
+  fastify.get<{ Querystring: { limit?: string; offset?: string; confidence?: string; platform?: string; env?: string } }>(
     '/verifications',
     {
       config: { rateLimit: { max: 100, timeWindow: '1 minute' } },
@@ -132,11 +143,13 @@ const route: FastifyPluginAsync = async (fastify) => {
       if (!parsed.success) {
         return reply.code(400).send({ error: { code: 'invalid_request', message: parsed.error.message } })
       }
-      const { limit, offset, confidence, platform } = parsed.data
+      const { limit, offset, confidence, platform, env } = parsed.data
+      const isSandbox = env === 'sandbox'
 
       const rows = await prisma.verification.findMany({
         where: {
           customerId: request.customerId,
+          isSandbox,
           state: { in: ['COMPLETED', 'FALLBACK_COMPLETE', 'FAILED'] },
           ...(confidence ? { confidence } : {}),
           ...(platform   ? { device: { platform } } : {}),
