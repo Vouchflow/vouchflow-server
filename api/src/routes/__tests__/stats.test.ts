@@ -43,7 +43,7 @@ d('GET /v1/customers/:id/stats', () => {
       verificationCount: 0,
       deviceCount:       0,
       highConfidencePct: null,
-      avgDurationMs:     null,
+      successRatePct:    null,
     })
     expect(Array.isArray(body.dailyBreakdown)).toBe(true)
   })
@@ -67,6 +67,24 @@ d('GET /v1/customers/:id/stats', () => {
     expect(body.verificationCount).toBe(5)
     expect(body.deviceCount).toBe(1)
     expect(body.highConfidencePct).toBeCloseTo(60.0, 5)
+  })
+
+  it('computes successRatePct = success / (success + terminal failure)', async () => {
+    // 3 successes, 1 failure → 75%. INITIATED is in-flight and excluded.
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const dev = await createDevice(customer.id)
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED' })
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED' })
+    await createVerification(customer.id, dev.id, { state: 'FALLBACK_COMPLETE' })
+    await createVerification(customer.id, dev.id, { state: 'FAILED' })
+    await createVerification(customer.id, dev.id, { state: 'INITIATED', completedAt: null })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/stats`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { successRatePct: number }).successRatePct).toBeCloseTo(75.0, 5)
   })
 
   it('dedupes device count by keyFingerprint (re-enrollments do not inflate)', async () => {

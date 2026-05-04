@@ -27,6 +27,7 @@ const VerificationsQuery = z.object({
   offset:     z.coerce.number().int().min(0).optional().default(0),
   confidence: z.enum(['high', 'medium', 'low']).optional(),
   platform:   z.enum(['ios', 'android', 'web']).optional(),
+  range:      z.enum(['1d', '7d', '30d', '90d']).optional(),
   env:        EnvFilter,
 })
 
@@ -57,15 +58,22 @@ const route: FastifyPluginAsync = async (fastify) => {
       const customerId = request.customerId
       const isSandbox = env === 'sandbox'
 
+      // Terminal states that count as a "success" (user got through) vs a
+      // "failure" (a real attempt that didn't succeed). INITIATED and FALLBACK
+      // are in-flight and not counted in the rate.
+      const SUCCESS_STATES = ['COMPLETED', 'FALLBACK_COMPLETE'] as const
+      const FAILURE_STATES = ['FAILED', 'EXPIRED', 'FALLBACK_LOCKED', 'FALLBACK_EXPIRED'] as const
+
       const [
         verificationCount,
         deviceRows,
         confidenceBreakdown,
-        durationRows,
+        successCount,
+        failureCount,
         dailyRows,
       ] = await Promise.all([
         prisma.verification.count({
-          where: { customerId, isSandbox, createdAt: { gte: since }, state: { in: ['COMPLETED', 'FALLBACK_COMPLETE'] } },
+          where: { customerId, isSandbox, createdAt: { gte: since }, state: { in: [...SUCCESS_STATES] } },
         }),
         // Active devices, deduped by keyFingerprint. The enroll route upserts
         // on deviceToken, so app reinstalls or test runs that don't send a
@@ -83,18 +91,14 @@ const route: FastifyPluginAsync = async (fastify) => {
           where: { customerId, isSandbox, createdAt: { gte: since }, confidence: { not: null } },
           _count: { _all: true },
         }),
-        // Average completion latency for the duration card. Uses raw SQL
-        // because Prisma's groupBy doesn't expose avg over an interval
-        // expression cleanly.
-        prisma.$queryRaw<Array<{ avg_ms: number | null }>>`
-          SELECT AVG(EXTRACT(EPOCH FROM (completed_at - created_at)) * 1000) AS avg_ms
-          FROM verifications
-          WHERE customer_id = ${customerId}
-            AND is_sandbox = ${isSandbox}
-            AND created_at >= ${since}
-            AND completed_at IS NOT NULL
-            AND state IN ('COMPLETED', 'FALLBACK_COMPLETE')
-        `,
+        // Success/failure counts back the success-rate card. Counted across
+        // all attempts that reached a terminal state in the window.
+        prisma.verification.count({
+          where: { customerId, isSandbox, createdAt: { gte: since }, state: { in: [...SUCCESS_STATES] } },
+        }),
+        prisma.verification.count({
+          where: { customerId, isSandbox, createdAt: { gte: since }, state: { in: [...FAILURE_STATES] } },
+        }),
         // Daily breakdown for the chart.
         prisma.$queryRaw<Array<{ d: Date; high: bigint; low: bigint }>>`
           SELECT
@@ -115,11 +119,14 @@ const route: FastifyPluginAsync = async (fastify) => {
       const high = confidenceBreakdown.find(r => r.confidence === 'high')?._count._all ?? 0
       const highConfidencePct = totalConfidence === 0 ? null : (high / totalConfidence) * 100
 
+      const totalAttempts = successCount + failureCount
+      const successRatePct = totalAttempts === 0 ? null : (successCount / totalAttempts) * 100
+
       return reply.send({
         verificationCount,
         deviceCount: deviceRows.length,
         highConfidencePct,
-        avgDurationMs: durationRows[0]?.avg_ms ?? null,
+        successRatePct,
         dailyBreakdown: dailyRows.map(row => ({
           date: row.d.toISOString().slice(0, 10),
           high: Number(row.high),
@@ -143,18 +150,20 @@ const route: FastifyPluginAsync = async (fastify) => {
       if (!parsed.success) {
         return reply.code(400).send({ error: { code: 'invalid_request', message: parsed.error.message } })
       }
-      const { limit, offset, confidence, platform, env } = parsed.data
+      const { limit, offset, confidence, platform, range, env } = parsed.data
       const isSandbox = env === 'sandbox'
+      const since = range ? new Date(Date.now() - RANGE_DAYS[range] * 24 * 60 * 60 * 1000) : undefined
 
       const rows = await prisma.verification.findMany({
         where: {
           customerId: request.customerId,
           isSandbox,
           state: { in: ['COMPLETED', 'FALLBACK_COMPLETE', 'FAILED'] },
+          ...(since      ? { createdAt: { gte: since } } : {}),
           ...(confidence ? { confidence } : {}),
           ...(platform   ? { device: { platform } } : {}),
         },
-        include: { device: { select: { platform: true } } },
+        include: { device: { select: { platform: true, deviceToken: true } } },
         orderBy: { createdAt: 'desc' },
         skip: offset,
         take: limit,
@@ -162,12 +171,13 @@ const route: FastifyPluginAsync = async (fastify) => {
 
       return reply.send({
         rows: rows.map(v => ({
-          sessionId:  v.sessionId,
-          confidence: v.confidence ?? 'low',
-          platform:   v.device?.platform ?? 'unknown',
-          biometric:  v.biometricUsed === true ? 'biometric' : (v.fallbackUsed ? 'fallback' : 'none'),
-          durationMs: v.completedAt ? v.completedAt.getTime() - v.createdAt.getTime() : null,
-          createdAt:  v.createdAt.toISOString(),
+          sessionId:   v.sessionId,
+          deviceToken: v.device?.deviceToken ?? null,
+          confidence:  v.confidence ?? 'low',
+          platform:    v.device?.platform ?? 'unknown',
+          biometric:   v.biometricUsed === true ? 'biometric' : (v.fallbackUsed ? 'fallback' : 'none'),
+          durationMs:  v.completedAt ? v.completedAt.getTime() - v.createdAt.getTime() : null,
+          createdAt:   v.createdAt.toISOString(),
         })),
       })
     },
@@ -182,18 +192,19 @@ const route: FastifyPluginAsync = async (fastify) => {
     async (request, reply) => {
       const v = await prisma.verification.findFirst({
         where: { sessionId: request.params.sessionId, customerId: request.customerId },
-        include: { device: { select: { platform: true } } },
+        include: { device: { select: { platform: true, deviceToken: true } } },
       })
       if (!v) {
         return reply.code(404).send({ error: { code: 'not_found', message: 'Verification not found.' } })
       }
       return reply.send({
-        sessionId:  v.sessionId,
-        confidence: v.confidence ?? 'low',
-        platform:   v.device?.platform ?? 'unknown',
-        biometric:  v.biometricUsed === true ? 'biometric' : (v.fallbackUsed ? 'fallback' : 'none'),
-        durationMs: v.completedAt ? v.completedAt.getTime() - v.createdAt.getTime() : null,
-        createdAt:  v.createdAt.toISOString(),
+        sessionId:   v.sessionId,
+        deviceToken: v.device?.deviceToken ?? null,
+        confidence:  v.confidence ?? 'low',
+        platform:    v.device?.platform ?? 'unknown',
+        biometric:   v.biometricUsed === true ? 'biometric' : (v.fallbackUsed ? 'fallback' : 'none'),
+        durationMs:  v.completedAt ? v.completedAt.getTime() - v.createdAt.getTime() : null,
+        createdAt:   v.createdAt.toISOString(),
       })
     },
   )
