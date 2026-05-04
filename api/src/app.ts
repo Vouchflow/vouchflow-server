@@ -6,6 +6,7 @@ import enrollRoute from './routes/enroll.js'
 import verifyRoute from './routes/verify.js'
 import deviceRoute from './routes/device.js'
 import customerRoute from './routes/customers.js'
+import statsRoute from './routes/stats.js'
 
 export async function buildApp() {
   const fastify = Fastify({
@@ -33,6 +34,7 @@ export async function buildApp() {
   await fastify.register(verifyRoute,  { prefix: '/v1' })
   await fastify.register(deviceRoute,  { prefix: '/v1' })
   await fastify.register(customerRoute, { prefix: '/v1' })
+  await fastify.register(statsRoute,    { prefix: '/v1' })
 
   // ── Health ─────────────────────────────────────────────────────────────────
   // Exempt from rate limiting — rate limiter uses Redis, which may be

@@ -77,6 +77,57 @@ export async function cleanDb(): Promise<void> {
   )
 }
 
+/** Mint a Device row directly. Bypasses the enroll route. */
+export async function createDevice(
+  customerId: string,
+  opts: { platform?: string; status?: string; enrolledAt?: Date } = {},
+) {
+  return prisma.device.create({
+    data: {
+      customerId,
+      deviceToken: `dvt_${crypto.randomBytes(8).toString('hex')}`,
+      publicKey: crypto.randomBytes(64).toString('base64'),
+      keyFingerprint: crypto.randomBytes(32).toString('hex'),
+      platform: opts.platform ?? 'android',
+      status: opts.status ?? 'active',
+      enrolledAt: opts.enrolledAt ?? new Date(),
+    },
+  })
+}
+
+/** Mint a Verification row directly. Confidence + completedAt control how
+ *  the row contributes to /stats aggregations. */
+export async function createVerification(
+  customerId: string,
+  deviceId: string,
+  opts: {
+    state?: string
+    confidence?: 'high' | 'medium' | 'low' | null
+    biometricUsed?: boolean
+    fallbackUsed?: boolean
+    createdAt?: Date
+    completedAt?: Date | null
+  } = {},
+) {
+  const createdAt = opts.createdAt ?? new Date()
+  return prisma.verification.create({
+    data: {
+      customerId,
+      deviceId,
+      sessionId: `ses_${crypto.randomBytes(8).toString('hex')}`,
+      challenge: crypto.randomBytes(32).toString('base64'),
+      state: opts.state ?? 'COMPLETED',
+      context: 'login',
+      biometricUsed: opts.biometricUsed ?? true,
+      fallbackUsed: opts.fallbackUsed ?? false,
+      confidence: opts.confidence === undefined ? 'high' : opts.confidence,
+      expiresAt: new Date(createdAt.getTime() + 60_000),
+      createdAt,
+      completedAt: opts.completedAt === undefined ? new Date(createdAt.getTime() + 1_500) : opts.completedAt,
+    },
+  })
+}
+
 /** Builds a minimal Fastify instance with a single test plugin. The plugin
  *  registers whatever routes the caller wants, gets the apiKeyAuth plugin
  *  pre-applied if `requireAuth` is set, and the rate-limit plugin is OMITTED

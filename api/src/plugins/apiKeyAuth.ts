@@ -30,6 +30,16 @@ function extractBearerToken(request: FastifyRequest): string | null {
   return auth.slice(7)
 }
 
+// Scope hierarchy: a write key satisfies any required scope (it's strictly
+// the more privileged), a read key only satisfies read. This matches the
+// industry convention (Stripe secret vs restricted keys, Twilio account
+// SID vs API key) and lets the dashboard reuse its sandbox-write session
+// key for read endpoints without juggling two keys.
+function scopeSatisfies(actual: ApiScope, required: ApiScope): boolean {
+  if (actual === 'write') return true
+  return actual === required
+}
+
 // §13: 14-day rotation overlap — deprecated keys remain valid until deprecatedAt + 14 days
 function isKeyExpired(deprecated: boolean, deprecatedAt: Date | null): boolean {
   if (!deprecated || !deprecatedAt) return false
@@ -52,7 +62,7 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
         const isSandboxRead = rawKey.startsWith('vsk_sandbox_read_')
         const sandboxScope: ApiScope = isSandboxRead ? 'read' : 'write'
 
-        if (sandboxScope !== requiredScope) {
+        if (!scopeSatisfies(sandboxScope, requiredScope)) {
           return reply.code(403).send({ error: { code: 'insufficient_scope', message: `This endpoint requires a ${requiredScope}-scoped API key.` } })
         }
 
@@ -86,7 +96,7 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
         return reply.code(401).send({ error: { code: 'api_key_expired', message: 'API key has expired after rotation window.' } })
       }
 
-      if (apiKey.scope !== requiredScope) {
+      if (!scopeSatisfies(apiKey.scope as ApiScope, requiredScope)) {
         return reply.code(403).send({ error: { code: 'insufficient_scope', message: `This endpoint requires a ${requiredScope}-scoped API key.` } })
       }
 

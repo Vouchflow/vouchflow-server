@@ -80,6 +80,31 @@ d('apiKeyAuth: write-scoped endpoint', () => {
     expect(res.json()).toMatchObject({ error: { code: 'insufficient_scope' } })
   })
 
+  // ── Scope hierarchy: write satisfies read ──────────────────────────────
+
+  it('accepts a sandbox WRITE key on a read endpoint (write is privileged)', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const res = await readApp.inject({
+      method: 'GET',
+      url: '/test',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ customerId: customer.id })
+  })
+
+  it('accepts a live WRITE key on a read endpoint', async () => {
+    const { customer } = await createSandboxCustomer()
+    const { rawKey } = await createLiveKey(customer.id, 'write')
+    const res = await readApp.inject({
+      method: 'GET',
+      url: '/test',
+      headers: { authorization: `Bearer ${rawKey}` },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toMatchObject({ customerId: customer.id })
+  })
+
   it('accepts a sandbox read key on a read endpoint', async () => {
     const { customer, sandboxReadKey } = await createSandboxCustomer()
     const res = await readApp.inject({
