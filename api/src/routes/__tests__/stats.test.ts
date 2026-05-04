@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { FastifyInstance } from 'fastify'
 import statsRoute from '../stats.js'
+import { prisma } from '../../lib/prisma.js'
 import {
   HAS_DB,
   buildTestApp,
@@ -66,6 +67,40 @@ d('GET /v1/customers/:id/stats', () => {
     expect(body.verificationCount).toBe(5)
     expect(body.deviceCount).toBe(1)
     expect(body.highConfidencePct).toBeCloseTo(60.0, 5)
+  })
+
+  it('dedupes device count by keyFingerprint (re-enrollments do not inflate)', async () => {
+    // The enroll route upserts on deviceToken, so an app reinstall that
+    // doesn't restore the cached token re-enrolls under the *same* attestation
+    // public key but a fresh deviceToken — creating a second 'active' row.
+    // The dashboard counter should collapse those.
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const sharedFp = 'fp_' + 'a'.repeat(60)
+    await prisma.device.create({
+      data: {
+        customerId: customer.id, deviceToken: 'dvt_a', publicKey: 'pk_a',
+        keyFingerprint: sharedFp, platform: 'android', status: 'active', enrolledAt: new Date(),
+      },
+    })
+    await prisma.device.create({
+      data: {
+        customerId: customer.id, deviceToken: 'dvt_b', publicKey: 'pk_a',
+        keyFingerprint: sharedFp, platform: 'android', status: 'active', enrolledAt: new Date(),
+      },
+    })
+    await prisma.device.create({
+      data: {
+        customerId: customer.id, deviceToken: 'dvt_c', publicKey: 'pk_b',
+        keyFingerprint: 'fp_' + 'b'.repeat(60), platform: 'android', status: 'active', enrolledAt: new Date(),
+      },
+    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/stats`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { deviceCount: number }).deviceCount).toBe(2)
   })
 
   it('excludes verifications outside the requested range', async () => {

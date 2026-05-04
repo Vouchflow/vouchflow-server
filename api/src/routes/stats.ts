@@ -50,7 +50,7 @@ const route: FastifyPluginAsync = async (fastify) => {
 
       const [
         verificationCount,
-        deviceCount,
+        deviceRows,
         confidenceBreakdown,
         durationRows,
         dailyRows,
@@ -58,7 +58,16 @@ const route: FastifyPluginAsync = async (fastify) => {
         prisma.verification.count({
           where: { customerId, createdAt: { gte: since }, state: { in: ['COMPLETED', 'FALLBACK_COMPLETE'] } },
         }),
-        prisma.device.count({ where: { customerId, status: 'active' } }),
+        // Active devices, deduped by keyFingerprint. The enroll route upserts
+        // on deviceToken, so app reinstalls or test runs that don't send a
+        // stable token mint a new row each time, inflating the count. The
+        // attestation key is more durable than the token, so distinct
+        // fingerprints is closer to "physical devices we've seen."
+        prisma.device.findMany({
+          where:    { customerId, status: 'active' },
+          select:   { keyFingerprint: true },
+          distinct: ['keyFingerprint'],
+        }),
         // Confidence breakdown for the percentage card.
         prisma.verification.groupBy({
           by: ['confidence'],
@@ -97,7 +106,7 @@ const route: FastifyPluginAsync = async (fastify) => {
 
       return reply.send({
         verificationCount,
-        deviceCount,
+        deviceCount: deviceRows.length,
         highConfidencePct,
         avgDurationMs: durationRows[0]?.avg_ms ?? null,
         dailyBreakdown: dailyRows.map(row => ({
