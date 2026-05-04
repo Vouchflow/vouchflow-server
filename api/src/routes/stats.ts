@@ -22,12 +22,19 @@ const StatsQuery = z.object({
   env:   EnvFilter,
 })
 
+// Result classifier for the dashboard's third filter dropdown:
+//   verified — terminal success at the high confidence ceiling
+//   degraded — terminal success at medium/low confidence
+//   failed   — any terminal failure path (auth failed, expired, OTP locked)
+// Independent of the confidence filter — the two AND together so a user
+// can ask for 'failed at medium confidence' if that ever matters.
 const VerificationsQuery = z.object({
   limit:      z.coerce.number().int().min(1).max(100).optional().default(20),
   offset:     z.coerce.number().int().min(0).optional().default(0),
   confidence: z.enum(['high', 'medium', 'low']).optional(),
   platform:   z.enum(['ios', 'android', 'web']).optional(),
   range:      z.enum(['1d', '7d', '30d', '90d']).optional(),
+  result:     z.enum(['verified', 'degraded', 'failed']).optional(),
   env:        EnvFilter,
 })
 
@@ -150,15 +157,26 @@ const route: FastifyPluginAsync = async (fastify) => {
       if (!parsed.success) {
         return reply.code(400).send({ error: { code: 'invalid_request', message: parsed.error.message } })
       }
-      const { limit, offset, confidence, platform, range, env } = parsed.data
+      const { limit, offset, confidence, platform, range, result, env } = parsed.data
       const isSandbox = env === 'sandbox'
       const since = range ? new Date(Date.now() - RANGE_DAYS[range] * 24 * 60 * 60 * 1000) : undefined
+
+      // result narrows the candidate states + (for verified/degraded) confidence.
+      // No filter → any terminal state, any confidence.
+      let resultStateFilter: Record<string, unknown> = { state: { in: ['COMPLETED', 'FALLBACK_COMPLETE', 'FAILED', 'EXPIRED', 'FALLBACK_LOCKED', 'FALLBACK_EXPIRED'] } }
+      if (result === 'verified') {
+        resultStateFilter = { state: { in: ['COMPLETED', 'FALLBACK_COMPLETE'] }, confidence: 'high' }
+      } else if (result === 'degraded') {
+        resultStateFilter = { state: { in: ['COMPLETED', 'FALLBACK_COMPLETE'] }, confidence: { in: ['medium', 'low'] } }
+      } else if (result === 'failed') {
+        resultStateFilter = { state: { in: ['FAILED', 'EXPIRED', 'FALLBACK_LOCKED', 'FALLBACK_EXPIRED'] } }
+      }
 
       const rows = await prisma.verification.findMany({
         where: {
           customerId: request.customerId,
           isSandbox,
-          state: { in: ['COMPLETED', 'FALLBACK_COMPLETE', 'FAILED'] },
+          ...resultStateFilter,
           ...(since      ? { createdAt: { gte: since } } : {}),
           ...(confidence ? { confidence } : {}),
           ...(platform   ? { device: { platform } } : {}),

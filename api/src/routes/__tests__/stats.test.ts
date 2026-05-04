@@ -329,6 +329,64 @@ d('GET /v1/verifications', () => {
     expect((res.json() as { rows: unknown[] }).rows.length).toBe(0)
   })
 
+  it('result=verified returns successes at high confidence only', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const dev = await createDevice(customer.id)
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED',          confidence: 'high'   })
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED',          confidence: 'medium' })
+    await createVerification(customer.id, dev.id, { state: 'FALLBACK_COMPLETE',  confidence: 'high'   })
+    await createVerification(customer.id, dev.id, { state: 'FAILED',             confidence: 'high'   })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/verifications?result=verified',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { rows: unknown[] }).rows.length).toBe(2)
+  })
+
+  it('result=degraded returns successes at medium/low confidence only', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const dev = await createDevice(customer.id)
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED', confidence: 'high'   })
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED', confidence: 'medium' })
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED', confidence: 'low'    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/verifications?result=degraded',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { rows: unknown[] }).rows.length).toBe(2)
+  })
+
+  it('result=failed returns terminal-failure states (FAILED, EXPIRED, FALLBACK_LOCKED, FALLBACK_EXPIRED)', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const dev = await createDevice(customer.id)
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED' })
+    await createVerification(customer.id, dev.id, { state: 'FAILED' })
+    await createVerification(customer.id, dev.id, { state: 'EXPIRED' })
+    await createVerification(customer.id, dev.id, { state: 'FALLBACK_LOCKED' })
+    await createVerification(customer.id, dev.id, { state: 'FALLBACK_EXPIRED' })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/verifications?result=failed',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { rows: unknown[] }).rows.length).toBe(4)
+  })
+
+  it('rejects an unknown result value', async () => {
+    const { sandboxWriteKey } = await createSandboxCustomer()
+    const res = await app.inject({
+      method: 'GET',
+      url: '/v1/verifications?result=banana',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect(res.statusCode).toBe(400)
+  })
+
   it('env=sandbox returns only sandbox rows; env=production returns only live rows', async () => {
     const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const sandboxDev = await createDevice(customer.id, { isSandbox: true })
