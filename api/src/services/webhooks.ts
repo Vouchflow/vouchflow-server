@@ -30,8 +30,14 @@ export interface VerificationFallbackCompletePayload {
 type WebhookPayload = VerificationCompletePayload | VerificationFallbackCompletePayload
 
 export async function dispatchWebhook(customerId: string, payload: WebhookPayload) {
+  // Only fan out to endpoints subscribed to this specific event. Skipping
+  // endpoints whose events array doesn't contain payload.event is the
+  // entire point of the per-endpoint subscription model — without this
+  // filter, every endpoint receives every event regardless of what they
+  // asked for, which both wastes their server cycles and makes the
+  // subscription UI a lie.
   const endpoints = await prisma.webhookEndpoint.findMany({
-    where: { customerId },
+    where: { customerId, events: { has: payload.event } },
   })
 
   for (const endpoint of endpoints) {
