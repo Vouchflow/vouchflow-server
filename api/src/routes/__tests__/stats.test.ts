@@ -476,3 +476,103 @@ d('GET /v1/verifications/:sessionId', () => {
     expect(res.statusCode).toBe(404)
   })
 })
+
+d('GET /v1/customers/:id/usage', () => {
+  let app: FastifyInstance
+
+  beforeAll(async () => {
+    app = await buildTestApp(async (fastify) => {
+      await fastify.register(statsRoute, { prefix: '/v1' })
+    })
+  })
+
+  afterAll(async () => app.close())
+  beforeEach(async () => cleanDb())
+
+  it('returns calendar-month period bounds', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/usage`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    const body = res.json() as { periodStart: string; periodEnd: string }
+    const start = new Date(body.periodStart)
+    const end   = new Date(body.periodEnd)
+    expect(start.getUTCDate()).toBe(1)
+    expect(end.getUTCDate()).toBe(1)
+    // periodEnd is the start of the next month → must be later than periodStart
+    expect(end.getTime()).toBeGreaterThan(start.getTime())
+  })
+
+  it('counts ALL verification states this period (INITIATED, COMPLETED, FAILED…)', async () => {
+    // Billing counts every API hit, not just successful auths.
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const dev = await createDevice(customer.id)
+    await createVerification(customer.id, dev.id, { state: 'COMPLETED' })
+    await createVerification(customer.id, dev.id, { state: 'FAILED' })
+    await createVerification(customer.id, dev.id, { state: 'INITIATED', completedAt: null })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/usage`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { verificationCount: number }).verificationCount).toBe(3)
+  })
+
+  it('excludes verifications from the previous month', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const dev = await createDevice(customer.id)
+    const now = new Date()
+    const lastMonth = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 1, 15))
+    const today     = new Date()
+    await createVerification(customer.id, dev.id, { createdAt: lastMonth })
+    await createVerification(customer.id, dev.id, { createdAt: today })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/usage`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { verificationCount: number }).verificationCount).toBe(1)
+  })
+
+  it('dedupes deviceCount by keyFingerprint', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const sharedFp = 'fp_' + 'a'.repeat(60)
+    await prisma.device.create({
+      data: {
+        customerId: customer.id, deviceToken: 'dvt_x', publicKey: 'pk',
+        keyFingerprint: sharedFp, platform: 'android', status: 'active', enrolledAt: new Date(),
+      },
+    })
+    await prisma.device.create({
+      data: {
+        customerId: customer.id, deviceToken: 'dvt_y', publicKey: 'pk',
+        keyFingerprint: sharedFp, platform: 'android', status: 'active', enrolledAt: new Date(),
+      },
+    })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/usage`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { deviceCount: number }).deviceCount).toBe(1)
+  })
+
+  it('scopes to the auth\'d customer', async () => {
+    const a = await createSandboxCustomer()
+    const b = await createSandboxCustomer()
+    const devB = await createDevice(b.customer.id)
+    await createVerification(b.customer.id, devB.id)
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${b.customer.id}/usage`,
+      headers: { authorization: `Bearer ${a.sandboxWriteKey}` },
+    })
+    expect((res.json() as { verificationCount: number }).verificationCount).toBe(0)
+  })
+})

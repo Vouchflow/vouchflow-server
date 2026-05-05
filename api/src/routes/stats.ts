@@ -202,6 +202,54 @@ const route: FastifyPluginAsync = async (fastify) => {
     },
   )
 
+  // GET /v1/customers/:id/usage
+  // Billing-period view of usage: verifications and unique devices for the
+  // current calendar month. Unlike /stats (windowed by ?range= for a
+  // dashboard view), this is fixed to the billing period so the numbers
+  // match what would appear on an invoice. Customer-scoped via auth;
+  // the :id param is decorative.
+  fastify.get(
+    '/customers/:id/usage',
+    {
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    },
+    async (request, reply) => {
+      const customerId = request.customerId
+      const isSandbox = request.isSandbox
+      const now = new Date()
+      const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1))
+      const periodEnd   = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 1))
+
+      const [verificationCount, deviceRows] = await Promise.all([
+        // Every verification *attempted* this period counts toward billing,
+        // regardless of state. INITIATED rows are real API calls.
+        prisma.verification.count({
+          where: { customerId, isSandbox, createdAt: { gte: periodStart, lt: periodEnd } },
+        }),
+        // Distinct devices that were active this period (deduped by
+        // keyFingerprint; reinstalls don't double-count).
+        prisma.device.findMany({
+          where: {
+            customerId, isSandbox, status: 'active',
+            OR: [
+              { enrolledAt: { gte: periodStart, lt: periodEnd } },
+              { lastSeen:   { gte: periodStart, lt: periodEnd } },
+            ],
+          },
+          select: { keyFingerprint: true },
+          distinct: ['keyFingerprint'],
+        }),
+      ])
+
+      return reply.send({
+        verificationCount,
+        deviceCount: deviceRows.length,
+        periodStart: periodStart.toISOString(),
+        periodEnd:   periodEnd.toISOString(),
+      })
+    },
+  )
+
   // GET /v1/verifications/:sessionId
   fastify.get<{ Params: { sessionId: string } }>(
     '/verifications/:sessionId',
