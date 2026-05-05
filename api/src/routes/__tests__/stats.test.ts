@@ -121,6 +121,21 @@ d('GET /v1/customers/:id/stats', () => {
     expect((res.json() as { deviceCount: number }).deviceCount).toBe(2)
   })
 
+  it('excludes devices enrolled outside the requested range', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const tenDaysAgo = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+    const yesterday  = new Date(Date.now() -      24 * 60 * 60 * 1000)
+    await createDevice(customer.id, { enrolledAt: tenDaysAgo })
+    await createDevice(customer.id, { enrolledAt: yesterday })
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${customer.id}/stats?range=7d`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect((res.json() as { deviceCount: number }).deviceCount).toBe(1)
+  })
+
   it('excludes verifications outside the requested range', async () => {
     const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const dev = await createDevice(customer.id)

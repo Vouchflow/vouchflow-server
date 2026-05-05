@@ -82,13 +82,14 @@ const route: FastifyPluginAsync = async (fastify) => {
         prisma.verification.count({
           where: { customerId, isSandbox, createdAt: { gte: since }, state: { in: [...SUCCESS_STATES] } },
         }),
-        // Active devices, deduped by keyFingerprint. The enroll route upserts
-        // on deviceToken, so app reinstalls or test runs that don't send a
-        // stable token mint a new row each time, inflating the count. The
-        // attestation key is more durable than the token, so distinct
-        // fingerprints is closer to "physical devices we've seen."
+        // Active devices enrolled within the selected window, deduped by
+        // keyFingerprint. The enroll route upserts on deviceToken, so app
+        // reinstalls or test runs that don't send a stable token mint a new
+        // row each time, inflating the count. The attestation key is more
+        // durable than the token, so distinct fingerprints is closer to
+        // "physical devices we've seen."
         prisma.device.findMany({
-          where:    { customerId, isSandbox, status: 'active' },
+          where:    { customerId, isSandbox, status: 'active', enrolledAt: { gte: since } },
           select:   { keyFingerprint: true },
           distinct: ['keyFingerprint'],
         }),
