@@ -28,8 +28,10 @@ api/
   src/
     routes/
       customers.ts     POST /v1/customers, PATCH, DELETE, live-keys
-      enroll.ts        POST /v1/enroll
+      enroll.ts        POST /v1/enroll (now accepts platform: 'web' with WebAuthn attestation)
       verify.ts        POST /v1/verify, /verify/:id/complete, /verify/:id/fallback, GET /v1/verify/:id
+      sign.ts          POST /v1/sign, /sign/:session_id/complete (Web SDK — JWS-attested payload signing)
+      jwks.ts          GET /v1/.well-known/jwks.json (public verifier JWKS for sign assertions)
       device.ts        GET /v1/device/:token/reputation
       auth.ts          GET /auth/google/callback, /auth/github/callback, POST /auth/signout
       pages.ts         HTML page routes (/, /signup, /dashboard, ...)
@@ -87,10 +89,13 @@ These endpoints require the `ADMIN_KEY` and are called by the web layer only —
 
 | Method | Path | Description |
 |---|---|---|
-| `POST` | `/v1/enroll` | Enroll a device (Secure Enclave / Keystore public key + attestation) |
-| `POST` | `/v1/verify` | Initiate a verification session — returns challenge |
-| `POST` | `/v1/verify/:session_id/complete` | Complete verification (signed challenge or OTP fallback) |
+| `POST` | `/v1/enroll` | Enroll a device. Supports `platform: 'ios' \| 'android' \| 'web'`. For web, `public_key` can be empty — the server extracts the COSE public key from the WebAuthn `attestation_object` inside `attestation.webauthn_attestation` |
+| `POST` | `/v1/verify` | Initiate a verification session — returns challenge. Web devices include `client_data_json`, `authenticator_data`, `credential_id` on the `/complete` call; cross-platform calls (web fields against an `ios` device or vice versa) are rejected with `422 platform_mismatch` |
+| `POST` | `/v1/verify/:session_id/complete` | Complete verification (signed challenge, WebAuthn assertion fields, or OTP fallback) |
 | `POST` | `/v1/verify/:session_id/fallback` | Request email OTP fallback for a session |
+| `POST` | `/v1/sign` | **Web SDK only.** Initiate a payload-signing session over a canonicalized JSON string. Requires `platform: 'web'` device. Default `minimum_confidence: 'high'` |
+| `POST` | `/v1/sign/:session_id/complete` | **Web SDK only.** Submit WebAuthn assertion; server returns a JWS assertion signed by Vouchflow's verifier key |
+| `GET` | `/v1/.well-known/jwks.json` | **Public.** Verifier JWKS for `sign` assertions. Cache-controlled (1 h browser / 24 h SWR). No auth header |
 | `GET` | `/v1/webhook/test` | Fire a test webhook event |
 | `POST` | `/v1/webhooks` | Register a webhook endpoint |
 | `DELETE` | `/v1/webhooks/:id` | Remove a webhook endpoint |
@@ -114,6 +119,17 @@ These endpoints require the `ADMIN_KEY` and are called by the web layer only —
 | `vsk_live_read_` | Live read | SHA-256 hash in `ApiKey` table |
 
 Raw live keys are returned once at generation time and never stored. Deprecated live keys remain valid for 14 days after rotation.
+
+### Web SDK
+
+The browser SDK is published as [`@vouchflow/web`](https://www.npmjs.com/package/@vouchflow/web). It hits `/v1/enroll`, `/v1/verify`, `/v1/sign`, and the email-OTP fallback endpoints with `platform: 'web'`. New routes specifically for web:
+
+- `routes/sign.ts` — `POST /v1/sign` (initiate) and `POST /v1/sign/:session_id/complete` (submit WebAuthn assertion → receive a Vouchflow-signed JWS over `payload_sha256`, `confidence`, `device_token`, `signing_device_id`, `context`, `session_id`).
+- `routes/jwks.ts` — `GET /v1/.well-known/jwks.json`. Public verifier JWKS used by customer backends to validate `sign` assertions via `jose.jwtVerify`.
+
+Web verifications and signing sessions are surfaced in the dashboard with `platform: web`, alongside iOS/Android verifications. JWS signing keys live in `services/signingKeys.ts` and rotate every ~90 days with a 14-day grace window where both keys appear in the JWKS response.
+
+Customer-facing docs live at [vouchflow.dev/docs/web-sdk](https://vouchflow.dev/docs/web-sdk). The Web SDK is currently sandbox-only (private beta).
 
 ## Web layer
 
