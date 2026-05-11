@@ -15,3 +15,6 @@ if (!process.env.SESSION_SECRET) {
 if (!process.env.ADMIN_KEY) {
   process.env.ADMIN_KEY = '0'.repeat(64)
 }
+if (!process.env.VOUCHFLOW_SIGNING_KEY_ENCRYPTION_KEY) {
+  process.env.VOUCHFLOW_SIGNING_KEY_ENCRYPTION_KEY = '0'.repeat(64)
+}
