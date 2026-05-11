@@ -17,7 +17,16 @@
 //   - COSE Keys: RFC 9052
 
 import crypto from 'node:crypto'
-import { decode } from 'cbor-x'
+
+// cbor-x publishes as a pure ESM package (its `type` field), but the server's
+// tsconfig is module: Node16 with no `"type": "module"` in package.json, so
+// `import` of an ESM-only package is rejected at compile time. cbor-x ships a
+// CommonJS bundle under its `exports.node.require` map — `require` resolves
+// to that path, so the runtime import works fine. We declare a typed alias
+// here so the rest of the file gets autocomplete + type checking on `decode`.
+// eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
+const cborX = require('cbor-x') as { decode: (data: Uint8Array) => unknown }
+const decode = cborX.decode
 
 // ── Type definitions ────────────────────────────────────────────────────────
 
