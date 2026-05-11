@@ -46,23 +46,33 @@ async function makeWebDevice(customerId: string) {
     },
   })
 
-  /** Build a WebAuthn assertion (clientDataJSON + authenticatorData + signature)
-   *  for the given challenge, using `webauthn.get` type and the canonical
-   *  signedData = authenticatorData || SHA-256(clientDataJSON). */
-  function assertionFor(challengeBase64: string, opts: {
+  /** Build a WebAuthn assertion bundle for the new RFC wire format:
+   *  the SDK sets clientData.challenge = base64url(SHA-256(canonical || challenge)).
+   *  The test takes the same canonical_payload and raw server challenge that
+   *  POST /v1/sign returned and reconstructs that hash. */
+  function assertionFor(opts: {
+    canonicalizedPayload: string
+    challengeBase64: string
     type?: string
     origin?: string
     flags?: number
     rpId?: string
-  } = {}) {
+  }) {
     const type = opts.type ?? 'webauthn.get'
     const origin = opts.origin ?? `https://${RP_ID}`
     const flags = opts.flags ?? 0x05  // UV (0x04) + UP (0x01)
     const rpId = opts.rpId ?? RP_ID
 
+    const canonicalBytes = Buffer.from(opts.canonicalizedPayload, 'utf8')
+    const challengeBytes = Buffer.from(opts.challengeBase64, 'base64')
+    const signingInputHash = crypto
+      .createHash('sha256')
+      .update(Buffer.concat([canonicalBytes, challengeBytes]))
+      .digest()
+
     const clientData = {
       type,
-      challenge: base64ToBase64url(challengeBase64),
+      challenge: base64ToBase64url(signingInputHash.toString('base64')),
       origin,
       crossOrigin: false,
     }
@@ -86,6 +96,49 @@ async function makeWebDevice(customerId: string) {
   }
 
   return { deviceToken, credentialId, publicKeyBase64, assertionFor }
+}
+
+/** Build a mobile (iOS or Android) sign device. The signature is a raw
+ *  ECDSA-P256 over `canonical || challenge` — no clientDataJSON wrapping.
+ *  Both platforms produce identical bytes for this signature; the only
+ *  difference at the wire level is the optional app_attest_assertion field. */
+async function makeMobileSignDevice(
+  customerId: string,
+  platform: 'ios' | 'android',
+  opts: { ageDays?: number } = {},
+) {
+  const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
+  const publicKeyBase64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+  const deviceToken = `dvt_${crypto.randomBytes(8).toString('hex')}`
+  // computeConfidence requires deviceAgeDays > 30 for `high`. Default to a
+  // 60-day-old device so tests asserting `high` aren't capped by age.
+  const ageDays = opts.ageDays ?? 60
+  const enrolledAt = new Date(Date.now() - ageDays * 24 * 60 * 60 * 1000)
+
+  await prisma.device.create({
+    data: {
+      customerId,
+      deviceToken,
+      publicKey: publicKeyBase64,
+      keyFingerprint: crypto.createHash('sha256').update(publicKeyBase64).digest('hex'),
+      platform,
+      attestationVerified: true,  // sandbox treats attestation as verified
+      confidenceCeiling: 'high',
+      status: 'active',
+      enrolledAt,
+      isSandbox: true,
+    },
+  })
+
+  function signFor(opts: { canonicalizedPayload: string; challengeBase64: string }) {
+    const canonicalBytes = Buffer.from(opts.canonicalizedPayload, 'utf8')
+    const challengeBytes = Buffer.from(opts.challengeBase64, 'base64')
+    const signingInput = Buffer.concat([canonicalBytes, challengeBytes])
+    const signature = crypto.createSign('SHA256').update(signingInput).sign(privateKey)
+    return signature.toString('base64')
+  }
+
+  return { deviceToken, publicKeyBase64, signFor }
 }
 
 function base64url(buf: Buffer | Uint8Array): string {
@@ -142,7 +195,33 @@ d('POST /v1/sign — initiate', () => {
     expect(res.statusCode).toBe(404)
   })
 
-  it('422 for non-web platform device', async () => {
+  it('iOS device may initiate sign (Phase 2)', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken } = await makeMobileSignDevice(customer.id, 'ios')
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: '{}' },
+    })
+    expect(res.statusCode).toBe(200)
+    void customer
+  })
+
+  it('Android device may initiate sign (Phase 2)', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken } = await makeMobileSignDevice(customer.id, 'android')
+    const res = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: '{}' },
+    })
+    expect(res.statusCode).toBe(200)
+    void customer
+  })
+
+  it('422 for an exotic platform device', async () => {
     const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const device = await prisma.device.create({
       data: {
@@ -150,7 +229,7 @@ d('POST /v1/sign — initiate', () => {
         deviceToken: `dvt_${crypto.randomBytes(8).toString('hex')}`,
         publicKey: crypto.randomBytes(64).toString('base64'),
         keyFingerprint: crypto.randomBytes(32).toString('hex'),
-        platform: 'ios',
+        platform: 'unknown',
         status: 'active',
         isSandbox: true,
       },
@@ -227,7 +306,7 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
       session_id: string; challenge: string; payload_sha256: string
     }
 
-    const assertion = assertionFor(challenge)
+    const assertion = assertionFor({ canonicalizedPayload: payload, challengeBase64: challenge })
 
     const complete = await app.inject({
       method: 'POST',
@@ -244,10 +323,12 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
       signed_at: string
       assertion: string
       session_id: string
+      platform: string
     }
     expect(body.verified).toBe(true)
     expect(body.signing_device_id).toMatch(/^sdv_/)
     expect(body.session_id).toBe(session_id)
+    expect(body.platform).toBe('web')
     expect(body.assertion.split('.').length).toBe(3)  // JWS compact
 
     // Verify JWS against JWKS
@@ -270,23 +351,60 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
     expect(claims.context).toBe('mandate_signing')
     expect(claims.session_id).toBe(session_id)
     expect(claims.device_token).toBe(deviceToken)
+    expect(claims.platform).toBe('web')
   })
 
   it('rejects with 422 when WebAuthn challenge is tampered', async () => {
     const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const { deviceToken, assertionFor } = await makeWebDevice(customer.id)
+    const payload = '{}'
 
     const init = await app.inject({
       method: 'POST',
       url: '/v1/sign',
       headers: { authorization: `Bearer ${sandboxWriteKey}` },
-      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: '{}' },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: payload },
     })
     const { session_id } = init.json() as { session_id: string }
 
-    // Build an assertion for a *different* challenge — assertion should fail
+    // Build an assertion bound to a *different* challenge — assertion should fail
     const wrongChallenge = crypto.randomBytes(32).toString('base64')
-    const assertion = assertionFor(wrongChallenge)
+    const assertion = assertionFor({
+      canonicalizedPayload: payload,
+      challengeBase64: wrongChallenge,
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/sign/${session_id}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, ...assertion },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().error.code).toBe('invalid_signature')
+  })
+
+  it('rejects when canonical payload changed between init and assertion build (payload swap)', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken, assertionFor } = await makeWebDevice(customer.id)
+    const initiatedPayload = '{"id":"mand_real","amount":10}'
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: initiatedPayload },
+    })
+    const { session_id, challenge } = init.json() as { session_id: string; challenge: string }
+
+    // Attacker tries to reuse the challenge with a different payload —
+    // the assertion's WebAuthn challenge encodes the swapped payload's hash,
+    // which won't match what the server expects when reconstructed.
+    const swappedPayload = '{"id":"mand_real","amount":1000000}'
+    const assertion = assertionFor({
+      canonicalizedPayload: swappedPayload,
+      challengeBase64: challenge,
+    })
 
     const res = await app.inject({
       method: 'POST',
@@ -301,15 +419,16 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
   it('rejects double-completion with challenge_already_consumed', async () => {
     const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const { deviceToken, assertionFor } = await makeWebDevice(customer.id)
+    const payload = '{}'
 
     const init = await app.inject({
       method: 'POST',
       url: '/v1/sign',
       headers: { authorization: `Bearer ${sandboxWriteKey}` },
-      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: '{}' },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: payload },
     })
     const { session_id, challenge } = init.json() as { session_id: string; challenge: string }
-    const assertion = assertionFor(challenge)
+    const assertion = assertionFor({ canonicalizedPayload: payload, challengeBase64: challenge })
 
     const first = await app.inject({
       method: 'POST',
@@ -373,6 +492,261 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
     expect(res.statusCode).toBe(404)
   })
 })
+
+d('POST /v1/sign/:session_id/complete — mobile', () => {
+  let app: FastifyInstance
+
+  beforeAll(async () => {
+    app = await buildTestApp(async (fastify) => {
+      await fastify.register(signRoute, { prefix: '/v1' })
+      await fastify.register(jwksRoute, { prefix: '/v1' })
+    })
+  })
+  afterAll(async () => app.close())
+  beforeEach(async () => {
+    await cleanDb()
+    await prisma.$executeRawUnsafe('TRUNCATE TABLE "signing_keys" RESTART IDENTITY CASCADE')
+    clearSigningKeyCache()
+  })
+
+  it('iOS: completes with raw SE signature over canonical || challenge', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken, signFor } = await makeMobileSignDevice(customer.id, 'ios')
+    const payload = '{"id":"mand_ios","ok":true}'
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: {
+        device_token: deviceToken,
+        context: 'mandate_signing',
+        canonicalized_payload: payload,
+        minimum_confidence: 'medium',  // no app_attest_assertion → cap medium
+      },
+    })
+    const { session_id, challenge } = init.json() as { session_id: string; challenge: string }
+
+    const signature = signFor({ canonicalizedPayload: payload, challengeBase64: challenge })
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: `/v1/sign/${session_id}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, signed_challenge: signature },
+    })
+    expect(complete.statusCode).toBe(200)
+    const body = complete.json() as { confidence: string; platform: string; assertion: string }
+    expect(body.platform).toBe('ios')
+    expect(body.confidence).toBe('medium')  // capped without app_attest_assertion
+    expect(body.assertion.split('.').length).toBe(3)
+  })
+
+  it('iOS: minimum_confidence=high without app_attest_assertion still ships, capped to medium', async () => {
+    // Server enforces minimum_confidence at INITIATE against the device ceiling,
+    // not against the runtime confidence — so a high-ceiling iOS device passes
+    // the gate. The runtime confidence then caps to medium because no
+    // app_attest_assertion was supplied. This documents the behaviour.
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken, signFor } = await makeMobileSignDevice(customer.id, 'ios')
+    const payload = '{"v":1}'
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: {
+        device_token: deviceToken,
+        context: 'x',
+        canonicalized_payload: payload,
+        minimum_confidence: 'high',
+      },
+    })
+    expect(init.statusCode).toBe(200)
+    const { session_id, challenge } = init.json() as { session_id: string; challenge: string }
+    const signature = signFor({ canonicalizedPayload: payload, challengeBase64: challenge })
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: `/v1/sign/${session_id}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, signed_challenge: signature },
+    })
+    expect(complete.statusCode).toBe(200)
+    expect(complete.json().confidence).toBe('medium')
+    void customer
+  })
+
+  it('iOS: with valid app_attest_assertion confidence reaches high', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken, signFor } = await makeMobileSignDevice(customer.id, 'ios')
+    const payload = '{"v":1}'
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: payload },
+    })
+    const { session_id, challenge } = init.json() as { session_id: string; challenge: string }
+    const signature = signFor({ canonicalizedPayload: payload, challengeBase64: challenge })
+
+    // Craft a well-formed-enough App Attest assertion CBOR. v1 server-side
+    // verification accepts any well-formed assertion (per the comment in
+    // routes/sign.ts — full Apple-root verification is a v2 hardening).
+    const fakeAuthenticatorData = Buffer.alloc(37, 0xaa)
+    const fakeSignature = Buffer.alloc(64, 0xbb)
+    const assertionCbor = encodeAppAttestAssertion(fakeAuthenticatorData, fakeSignature)
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: `/v1/sign/${session_id}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: {
+        device_token: deviceToken,
+        signed_challenge: signature,
+        app_attest_assertion: assertionCbor.toString('base64'),
+      },
+    })
+    expect(complete.statusCode).toBe(200)
+    expect(complete.json().confidence).toBe('high')
+    void customer
+  })
+
+  it('Android: completes with raw Keystore signature, confidence inherits from ceiling', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken, signFor } = await makeMobileSignDevice(customer.id, 'android')
+    const payload = '{"id":"mand_android"}'
+
+    const init = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: payload },
+    })
+    const { session_id, challenge } = init.json() as { session_id: string; challenge: string }
+    const signature = signFor({ canonicalizedPayload: payload, challengeBase64: challenge })
+
+    const complete = await app.inject({
+      method: 'POST',
+      url: `/v1/sign/${session_id}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, signed_challenge: signature },
+    })
+    expect(complete.statusCode).toBe(200)
+    const body = complete.json() as { platform: string; confidence: string }
+    expect(body.platform).toBe('android')
+    expect(body.confidence).toBe('high')  // Android keeps its ceiling
+    void customer
+  })
+
+  it('mobile: payload swap (sign different bytes than session stored) is rejected', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken, signFor } = await makeMobileSignDevice(customer.id, 'android')
+    const initiated = '{"id":"mand","amount":10}'
+    const init = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: initiated },
+    })
+    const { session_id, challenge } = init.json() as { session_id: string; challenge: string }
+
+    // Sign over different bytes than the session stored — signature verifies
+    // against canonical || challenge, server reconstructs canonical from the
+    // session record, hashes don't match.
+    const signature = signFor({
+      canonicalizedPayload: '{"id":"mand","amount":1000000}',
+      challengeBase64: challenge,
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/sign/${session_id}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, signed_challenge: signature },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().error.code).toBe('invalid_signature')
+    void customer
+  })
+
+  it('platform_mismatch: web device receives mobile-format completion', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken } = await makeWebDevice(customer.id)
+    const init = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: '{}' },
+    })
+    const { session_id } = init.json() as { session_id: string }
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/sign/${session_id}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, signed_challenge: 'AAAA' },  // mobile-style
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().error.code).toBe('platform_mismatch')
+    void customer
+  })
+
+  it('platform_mismatch: mobile device receives WebAuthn-format completion', async () => {
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { deviceToken } = await makeMobileSignDevice(customer.id, 'ios')
+    const init = await app.inject({
+      method: 'POST',
+      url: '/v1/sign',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: { device_token: deviceToken, context: 'x', canonicalized_payload: '{}' },
+    })
+    const { session_id } = init.json() as { session_id: string }
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/sign/${session_id}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: {
+        device_token: deviceToken,
+        signed_challenge: 'AAAA',
+        client_data_json: 'AAAA',
+        authenticator_data: 'AAAA',
+        credential_id: 'AAAA',
+      },
+    })
+    expect(res.statusCode).toBe(422)
+    expect(res.json().error.code).toBe('platform_mismatch')
+    void customer
+  })
+})
+
+// Build a minimal CBOR map { authenticatorData: bytes, signature: bytes }
+// matching the shape DCAppAttestService.generateAssertion produces.
+function encodeAppAttestAssertion(authData: Buffer, signature: Buffer): Buffer {
+  const cbor: number[] = []
+  cbor.push(0xa2)  // map with 2 entries
+  // "authenticatorData" key
+  cbor.push(0x71)  // text string length 17
+  cbor.push(...Buffer.from('authenticatorData', 'utf8'))
+  // byte string value
+  pushByteString(cbor, authData)
+  // "signature" key
+  cbor.push(0x69)  // text string length 9
+  cbor.push(...Buffer.from('signature', 'utf8'))
+  pushByteString(cbor, signature)
+  return Buffer.from(cbor)
+}
+
+function pushByteString(buf: number[], bytes: Buffer): void {
+  if (bytes.length < 24) {
+    buf.push(0x40 | bytes.length)
+  } else if (bytes.length < 256) {
+    buf.push(0x58, bytes.length)
+  } else {
+    buf.push(0x59, (bytes.length >> 8) & 0xff, bytes.length & 0xff)
+  }
+  for (const b of bytes) buf.push(b)
+}
 
 d('GET /v1/.well-known/jwks.json', () => {
   let app: FastifyInstance
