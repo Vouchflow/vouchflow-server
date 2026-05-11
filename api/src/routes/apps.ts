@@ -6,6 +6,15 @@ import type { FastifyInstance } from 'fastify'
 import crypto from 'node:crypto'
 import { prisma } from '../lib/prisma.js'
 import { verifyAdminKey } from '../lib/adminAuth.js'
+import { encryptWebhookSecret } from '../services/webhookSecrets.js'
+
+// Per-app webhook constants
+const MAX_ENDPOINTS_PER_APP = 20
+const ALLOWED_WEBHOOK_EVENTS = new Set([
+  'verification.complete',
+  'verification.fallback_complete',
+  'sign.complete',
+])
 
 // Reserved slugs collide with dashboard URL routes (e.g. /apps/new). `default`
 // is intentionally NOT reserved — the migration creates one with that slug.
@@ -134,13 +143,32 @@ function validateConfidencePolicy(
 
 // ── response shaping ────────────────────────────────────────────────────────
 
-function appSummary(app: { id: string; name: string; slug: string; description: string | null; webSdkEnabled: boolean; archivedAt: Date | null; createdAt: Date }) {
+function appSummary(app: {
+  id: string
+  name: string
+  slug: string
+  description: string | null
+  webSdkEnabled: boolean
+  archivedAt: Date | null
+  createdAt: Date
+  iosTeamId?: string | null
+  iosBundleId?: string | null
+  androidPackageName?: string | null
+  androidSigningKeySha256?: string | null
+}) {
+  // The list view ("/settings" Apps tab) needs enough metadata to show
+  // platform-configured badges per app without a per-row API call. We
+  // expose booleans only — never the raw IDs from the summary path —
+  // so the list is cheap and doesn't double as a config exfiltration
+  // vector for an Admin-key-leaked scenario.
   return {
     id: app.id,
     name: app.name,
     slug: app.slug,
     description: app.description,
     webSdkEnabled: app.webSdkEnabled,
+    iosConfigured:     !!(app.iosTeamId && app.iosBundleId),
+    androidConfigured: !!(app.androidPackageName && app.androidSigningKeySha256),
     archivedAt: app.archivedAt,
     createdAt: app.createdAt,
   }
@@ -595,5 +623,104 @@ export default async function appsRoute(fastify: FastifyInstance) {
       })
       return reply.send({ key: updated })
     }
+  )
+
+  // ── Per-app webhooks (admin-keyed) ────────────────────────────────────
+  // The dashboard manages webhooks per-app from the apps-detail page.
+  // The /v1/webhooks family in webhooks.ts is API-key-auth scoped to the
+  // *current request's* app, which doesn't fit the admin/dashboard flow
+  // — so these admin-keyed mirror endpoints exist alongside.
+  fastify.get<{ Params: { id: string; appId: string } }>(
+    '/customers/:id/apps/:appId/webhooks',
+    { config: { rateLimit: { max: 60, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!verifyAdminKey(request.headers.authorization)) {
+        return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
+      }
+      const { id: customerId, appId } = request.params
+      const app = await prisma.app.findFirst({ where: { id: appId, customerId } })
+      if (!app) return reply.code(404).send({ error: { code: 'not_found', message: 'App not found.' } })
+      const endpoints = await prisma.webhookEndpoint.findMany({
+        where: { appId }, orderBy: { createdAt: 'asc' },
+      })
+      return {
+        webhooks: endpoints.map(e => ({
+          id:        e.id,
+          url:       e.url,
+          events:    e.events,
+          createdAt: e.createdAt.toISOString(),
+        })),
+      }
+    },
+  )
+
+  fastify.post<{
+    Params: { id: string; appId: string }
+    Body:   { url?: string; events?: string[] }
+  }>(
+    '/customers/:id/apps/:appId/webhooks',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!verifyAdminKey(request.headers.authorization)) {
+        return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
+      }
+      const { id: customerId, appId } = request.params
+      const url = (request.body?.url ?? '').trim()
+      const events = request.body?.events ?? []
+      if (!url || !/^https?:\/\//.test(url)) {
+        return reply.code(400).send({ error: { code: 'invalid_request', message: 'url must be a valid http(s) URL.' } })
+      }
+      if (!Array.isArray(events) || events.length === 0) {
+        return reply.code(400).send({ error: { code: 'invalid_request', message: 'events must be a non-empty array.' } })
+      }
+      for (const ev of events) {
+        if (!ALLOWED_WEBHOOK_EVENTS.has(ev)) {
+          return reply.code(400).send({ error: { code: 'invalid_request', message: `Unknown event: ${ev}` } })
+        }
+      }
+      const app = await prisma.app.findFirst({ where: { id: appId, customerId } })
+      if (!app) return reply.code(404).send({ error: { code: 'not_found', message: 'App not found.' } })
+
+      const existing = await prisma.webhookEndpoint.count({ where: { appId } })
+      if (existing >= MAX_ENDPOINTS_PER_APP) {
+        return reply.code(409).send({
+          error: { code: 'endpoint_limit_reached', message: `Maximum ${MAX_ENDPOINTS_PER_APP} webhook endpoints per app.` },
+        })
+      }
+      const rawSecret = `whsec_${crypto.randomBytes(24).toString('hex')}`
+      const secretEncrypted = await encryptWebhookSecret(rawSecret)
+      const endpoint = await prisma.webhookEndpoint.create({
+        data: { customerId, appId, url, events, secretEncrypted },
+      })
+      return reply.code(201).send({
+        id:        endpoint.id,
+        url:       endpoint.url,
+        events:    endpoint.events,
+        secret:    rawSecret,
+        createdAt: endpoint.createdAt.toISOString(),
+      })
+    },
+  )
+
+  fastify.delete<{ Params: { id: string; appId: string; webhookId: string } }>(
+    '/customers/:id/apps/:appId/webhooks/:webhookId',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!verifyAdminKey(request.headers.authorization)) {
+        return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
+      }
+      const { id: customerId, appId, webhookId } = request.params
+      const found = await prisma.webhookEndpoint.findFirst({
+        where: { id: webhookId, appId, customerId },
+      })
+      if (!found) {
+        return reply.code(404).send({ error: { code: 'not_found', message: 'Webhook endpoint not found.' } })
+      }
+      await prisma.$transaction([
+        prisma.webhookDelivery.deleteMany({ where: { endpointId: found.id } }),
+        prisma.webhookEndpoint.delete({ where: { id: found.id } }),
+      ])
+      return reply.code(204).send()
+    },
   )
 }
