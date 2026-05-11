@@ -27,7 +27,20 @@ export interface VerificationFallbackCompletePayload {
   api_version: string
 }
 
-type WebhookPayload = VerificationCompletePayload | VerificationFallbackCompletePayload
+export interface SignCompletePayload {
+  event: 'sign.complete'
+  session_id: string
+  verified: boolean
+  confidence: string
+  context: string | null
+  timestamp: string
+  api_version: string
+}
+
+type WebhookPayload =
+  | VerificationCompletePayload
+  | VerificationFallbackCompletePayload
+  | SignCompletePayload
 
 export async function dispatchWebhook(customerId: string, payload: WebhookPayload) {
   // Only fan out to endpoints subscribed to this specific event. Skipping

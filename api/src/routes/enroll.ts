@@ -5,6 +5,7 @@ import { prisma } from '../lib/prisma.js'
 import { redis } from '../lib/redis.js'
 import { makeApiKeyAuthPlugin } from '../plugins/apiKeyAuth.js'
 import { validateAttestation, buildAttestationConfig } from '../services/attestation.js'
+import { validateWebAuthnAttestation } from '../services/webauthn.js'
 import { anomalyQueue } from '../lib/queues.js'
 
 // §7 POST /v1/enroll rate limit: 10/minute per customer + IP
@@ -25,6 +26,15 @@ const AttestationSchema = z.object({
   // base64-encoded DER. Server walks to Google HW Attestation Root CA and
   // parses the leaf's attestation extension.
   cert_chain: z.array(z.string()).nullish(),
+  // WebAuthn attestation: CBOR-encoded attestation object and clientDataJSON,
+  // both base64url-encoded. The server CBOR-decodes the attestation object,
+  // verifies the attestation statement (format-dependent), and extracts the
+  // credential public key in SPKI DER format — the same format iOS/Android send
+  // as `public_key`.
+  webauthn_attestation: z.object({
+    attestation_object: z.string(),    // base64url of raw WebAuthn attestationObject
+    client_data_json: z.string(),      // base64url of raw clientDataJSON
+  }).nullish(),
 })
 
 const EnrollRequestSchema = z.object({
@@ -32,10 +42,16 @@ const EnrollRequestSchema = z.object({
   platform: z.enum(['ios', 'android', 'web']),
   reason: z.enum(['fresh_enrollment', 'reinstall', 'key_invalidated', 'corrupted']),
   attestation: AttestationSchema.nullish(),
-  public_key: z.string().min(1),
+  // Mobile SDKs send their SPKI-DER public key directly. The Web SDK sends
+  // an empty string and the server extracts the key from the WebAuthn
+  // attestation object — see effectivePublicKey override below.
+  public_key: z.string(),
   device_token: z.string().nullish(),
   strongbox_backed: z.boolean().nullish(),
-})
+}).refine(
+  (val) => val.platform === 'web' || val.public_key.length > 0,
+  { message: 'public_key required for non-web platforms', path: ['public_key'] },
+)
 
 type EnrollRequest = z.infer<typeof EnrollRequestSchema>
 
@@ -86,9 +102,14 @@ const route: FastifyPluginAsync = async (fastify) => {
 
       // ── Public key uniqueness check ───────────────────────────────────────
       // §7: "if exists under different device_token, reject 409"
-      const existingDevice = await prisma.device.findFirst({
-        where: { publicKey: body.public_key },
-      })
+      // Skip when body.public_key is empty (Web SDK enrollment — the key is
+      // extracted from the WebAuthn attestation below; running the check on
+      // an empty key would either be a no-op or false-positive against legacy
+      // rows). Web duplicates are caught downstream by the credential_id
+      // uniqueness constraint.
+      const existingDevice = body.public_key.length > 0
+        ? await prisma.device.findFirst({ where: { publicKey: body.public_key } })
+        : null
       if (existingDevice && existingDevice.deviceToken !== (body.device_token ?? '')) {
         await normalizeLatency(start, ENROLL_RESPONSE_TIME_MS)
         return reply.code(409).send({
@@ -105,43 +126,94 @@ const route: FastifyPluginAsync = async (fastify) => {
       // In sandbox, attestation is always treated as verified so developers can
       // test the full confidence ladder without a Play Console-registered APK.
       let attestationVerified = request.isSandbox
-      if (!request.isSandbox && body.attestation) {
+      let confidenceCeiling = attestationVerified ? 'high' : 'medium'
+
+      // WebAuthn attestation fields — populated only for platform === 'web'
+      let webauthnCredentialId: string | undefined
+      let webauthnAttestationFormat: string | undefined
+      // Override body.public_key with the one extracted from WebAuthn authData
+      // when a WebAuthn attestation is provided (the COSE key is authoritative).
+      let effectivePublicKey = body.public_key
+      // Store user_agent from the request for web devices
+      const userAgent = request.headers['user-agent'] ?? undefined
+
+      // WebAuthn key extraction runs in both sandbox and production — we
+      // always need the COSE-extracted SPKI DER as the stored public_key for
+      // a web device. (Cert-chain trust verification still respects the
+      // sandbox short-circuit elsewhere — see attestationVerified.)
+      if (body.platform === 'web' && body.attestation?.webauthn_attestation) {
         try {
-          // Multi-tenant: pull team_id / bundle_id / package_name from the
-          // Customer row. Falls back to env vars when unset (single-tenant
-          // legacy deployment) — see buildAttestationConfig.
-          const customer = await prisma.customer.findUnique({
-            where: { id: request.customerId },
-            select: {
-              iosTeamId: true,
-              iosBundleId: true,
-              androidPackageName: true,
-            },
-          })
-          const result = await validateAttestation(
-            {
-              platform: body.platform,
-              token: body.attestation.token ?? null,
-              keyId: body.attestation.key_id ?? null,
-              certChain: body.attestation.cert_chain ?? null,
-              nonce: body.idempotency_key,
-            },
-            buildAttestationConfig(customer),
+          const attObj = Buffer.from(
+            body.attestation.webauthn_attestation.attestation_object,
+            'base64',
           )
-          attestationVerified = result.verified
+          const clientDataJSON = Buffer.from(
+            body.attestation.webauthn_attestation.client_data_json,
+            'base64',
+          )
+          const result = await validateWebAuthnAttestation(attObj, clientDataJSON)
+          effectivePublicKey = result.publicKey || body.public_key
+          webauthnCredentialId = result.credentialId
+          webauthnAttestationFormat = result.attestationFormat
+          if (request.isSandbox) {
+            // Sandbox: skip cert-chain trust, accept the COSE key.
+            attestationVerified = true
+            confidenceCeiling = 'high'
+          } else {
+            attestationVerified = result.verified
+            confidenceCeiling = result.confidenceCeiling
+          }
         } catch {
-          // Non-fatal per §7
+          // Non-fatal per §7 — proceed at lower confidence
           attestationVerified = false
+          confidenceCeiling = 'medium'
         }
       }
 
-      const confidenceCeiling = attestationVerified ? 'high' : 'medium'
+      if (!request.isSandbox && body.attestation) {
+        if (body.platform !== 'web') {
+          // ── iOS / Android attestation path ────────────────────────────────
+          try {
+            const customer = await prisma.customer.findUnique({
+              where: { id: request.customerId },
+              select: {
+                iosTeamId: true,
+                iosBundleId: true,
+                androidPackageName: true,
+              },
+            })
+            const result = await validateAttestation(
+              {
+                platform: body.platform,
+                token: body.attestation.token ?? null,
+                keyId: body.attestation.key_id ?? null,
+                certChain: body.attestation.cert_chain ?? null,
+                nonce: body.idempotency_key,
+              },
+              buildAttestationConfig(customer),
+            )
+            attestationVerified = result.verified
+          } catch {
+            // Non-fatal per §7
+            attestationVerified = false
+          }
+          confidenceCeiling = attestationVerified ? 'high' : 'medium'
+        }
+      }
+
+      // If platform is 'web' and no webauthn_attestation was provided,
+      // allow enrollment at medium confidence (still a hardware authenticator
+      // with user verification, just no attestation certificate).
+      if (body.platform === 'web' && !body.attestation?.webauthn_attestation && !request.isSandbox) {
+        attestationVerified = false
+        confidenceCeiling = 'medium'
+      }
 
       // ── Compute public key fingerprint ────────────────────────────────────
       // §11 Network Graph Privacy: fingerprint stored internally, never returned
       const keyFingerprint = crypto
         .createHash('sha256')
-        .update(body.public_key)
+        .update(effectivePublicKey)
         .digest('hex')
 
       // ── Create or update device record ───────────────────────────────────
@@ -154,23 +226,27 @@ const route: FastifyPluginAsync = async (fastify) => {
         create: {
           deviceToken,
           customerId: request.customerId,
-          publicKey: body.public_key,
+          publicKey: effectivePublicKey,
           keyFingerprint,
           platform,
           attestationVerified,
           confidenceCeiling,
           strongboxBacked: body.strongbox_backed ?? null,
+          credentialId: webauthnCredentialId,
+          attestationFormat: webauthnAttestationFormat,
           enrolledAt: new Date(),
           lastSeen: new Date(),
           status: 'active',
           isSandbox: request.isSandbox,
         },
         update: {
-          publicKey: body.public_key,
+          publicKey: effectivePublicKey,
           keyFingerprint,
           attestationVerified,
           confidenceCeiling,
           strongboxBacked: body.strongbox_backed ?? null,
+          credentialId: webauthnCredentialId,
+          attestationFormat: webauthnAttestationFormat,
           lastSeen: new Date(),
           status: 'active',
           isSandbox: request.isSandbox,

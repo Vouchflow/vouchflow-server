@@ -83,6 +83,11 @@ model Device {
   lastSeen           DateTime? @map("last_seen")
   status             String   @default("active")
   networkParticipant Boolean  @default(false) @map("network_participant")
+  // WebAuthn credential ID (base64url) — set when platform is 'web'.
+  credentialId       String?  @map("credential_id")
+  // WebAuthn attestation format: "packed", "tpm", "apple", "android-key", "none".
+  // Null for mobile platforms (iOS/Android use different attestation).
+  attestationFormat  String?  @map("attestation_format")
   // True when enrolled with a sandbox key, false for live keys. The dashboard
   // env toggle filters on this so production view doesn't include test data.
   isSandbox          Boolean  @default(true) @map("is_sandbox")
@@ -106,11 +111,18 @@ model Verification {
   challenge        String
   challengeConsumed Boolean  @default(false) @map("challenge_consumed")
   state            String    @default("INITIATED")
+  // "verify" | "sign" — sign sessions are created by POST /v1/sign and
+  // completed via POST /v1/sign/{session_id}/complete (WebAuthn assertion).
+  type             String    @default("verify") @map("type")
   context          String?
   biometricUsed    Boolean?  @map("biometric_used")
   fallbackUsed     Boolean   @default(false) @map("fallback_used")
   fallbackReason   String?   @map("fallback_reason")
   confidence       String?
+  // For sign operations: JCS-canonicalized payload string.
+  canonicalizedPayload String? @map("canonicalized_payload")
+  // SHA-256 hash of the canonicalized payload (verified on sign initiation).
+  payloadSha256    String?   @map("payload_sha256")
   expiresAt        DateTime  @map("expires_at")
   retrySessionId   String?   @map("retry_session_id")
   completedAt      DateTime? @map("completed_at")
@@ -194,6 +206,23 @@ model IdempotencyRecord {
 
   @@index([key])
   @@map("idempotency_records")
+}
+
+// ─── Signing key for JWS assertions from /v1/sign (Web SDK) ────────────────
+// Ed25519 key pair used to sign JWS tokens returned by POST /v1/sign/complete.
+// The public key is exposed via GET /v1/.well-known/jwks.json so customers
+// can verify assertions. The private key is stored encrypted (same pgp_sym_encrypt
+// approach as webhook secrets) using VOUCHFLOW_SIGNING_KEY_ENCRYPTION_KEY.
+model SigningKey {
+  id                   String   @id @default(cuid())
+  kid                  String   @unique @map("kid")                         // Key ID for JWKS
+  algorithm            String   @map("algorithm")                            // "EdDSA" or "ES256"
+  publicKey            String   @map("public_key")                           // JWK JSON string (public key only)
+  privateJwkEncrypted  Bytes    @map("private_jwk_encrypted")                // pgp_sym_encrypt(private JWK JSON)
+  active               Boolean  @default(true) @map("active")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@map("signing_keys")
 }
 
 // ─── Webhook config (§7 Webhooks) ────────────────────────────────────────────

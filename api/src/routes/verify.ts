@@ -9,6 +9,7 @@ import { computeConfidence } from '../services/confidence.js'
 import { dispatchWebhook } from '../services/webhooks.js'
 import { generateOtp, hashOtp, verifyOtp, sendOtp, OTP_EXPIRY_MINUTES, OTP_MAX_ATTEMPTS } from '../services/otp.js'
 import { isDisposableEmailDomain } from '../services/disposableEmail.js'
+import { verifyWebAuthnAssertion, extractRpIdFromClientData } from '../services/webauthn.js'
 import { anomalyQueue } from '../lib/queues.js'
 import { config } from '../config.js'
 
@@ -33,6 +34,13 @@ const CompleteSchema = z.object({
   device_token: z.string().min(1),
   signed_challenge: z.string().min(1),
   biometric_used: z.boolean(),
+  // WebAuthn assertion fields — present when the device was enrolled via
+  // the Web SDK (platform === 'web'). When these are provided, the server
+  // verifies the WebAuthn assertion structure instead of the mobile SDK's
+  // simple challenge signature.
+  client_data_json: z.string().nullish(),
+  authenticator_data: z.string().nullish(),
+  credential_id: z.string().nullish(),
 })
 
 const FallbackSchema = z.object({
@@ -235,17 +243,86 @@ const route: FastifyPluginAsync = async (fastify) => {
           return reply.code(409).send({ error: { code: 'challenge_already_consumed', message: 'Challenge has already been used.' } })
         }
 
-        // ── Step 6: Validate signature (constant-time) ──────────────────────
-        const sigResult = verifySignature({
-          publicKey: device.publicKey,
-          challenge: session.challenge,
-          signature: body.signed_challenge,
-        })
-        const signatureValid = sigResult.valid
+        // ── Step 5.5: Platform binding ─────────────────────────────────────
+        // Reject submissions whose signature format doesn't match the device's
+        // enrolled platform. Without this, a downgrade-shaped path exists where
+        // a mobile device row could be probed with WebAuthn-formed assertions
+        // (or vice versa). The signature check would still reject every actual
+        // forgery, but the contract should be tight.
+        const isWebAuthnPath = body.client_data_json != null
+        if (isWebAuthnPath && device.platform !== 'web') {
+          return reply.code(422).send({
+            error: {
+              code: 'platform_mismatch',
+              message: 'WebAuthn assertion submitted for a non-web device.',
+            },
+          })
+        }
+        if (!isWebAuthnPath && device.platform === 'web') {
+          return reply.code(422).send({
+            error: {
+              code: 'platform_mismatch',
+              message: 'Mobile-format signature submitted for a web device.',
+            },
+          })
+        }
+
+        // ── Step 6: Validate signature ──────────────────────────────────────
+        // WebAuthn assertions have a different structure than mobile SDK signatures:
+        //   - Mobile: sign(SHA-256(challenge))
+        //   - WebAuthn: sign(authenticatorData || SHA-256(clientDataJSON))
+        // When client_data_json is present, we use the WebAuthn verification path.
+        let signatureValid = false
+        let sigFailReason: string | undefined
+        let biometricUsed = body.biometric_used
+
+        if (isWebAuthnPath) {
+          // ── WebAuthn assertion verification path ──────────────────────────
+          // Extract the expected RP ID from the clientDataJSON origin,
+          // since the server doesn't store it on the Device record.
+          // Guarded by isWebAuthnPath above; non-null after the platform check.
+          const clientDataJson = body.client_data_json!
+          let expectedRpId: string
+          try {
+            expectedRpId = extractRpIdFromClientData(clientDataJson)
+          } catch {
+            return reply.code(400).send({
+              error: { code: 'invalid_client_data', message: 'Cannot parse origin from clientDataJSON.' },
+            })
+          }
+
+          const assertionResult = verifyWebAuthnAssertion({
+            publicKey: device.publicKey,
+            challenge: session.challenge,
+            clientDataJSON: clientDataJson,
+            authenticatorData: body.authenticator_data!,
+            signature: body.signed_challenge,
+            expectedRpId,
+          })
+          signatureValid = assertionResult.valid
+          sigFailReason = assertionResult.reason
+
+          // For WebAuthn assertions with UV flag set (always required by SDK),
+          // biometric_used is true regardless of what the client sent.
+          // The UV flag is verified inside verifyWebAuthnAssertion.
+          if (signatureValid) {
+            biometricUsed = true
+          }
+        } else {
+          // ── Mobile SDK signature verification path (constant-time) ────────
+          const sigResult = verifySignature({
+            publicKey: device.publicKey,
+            challenge: session.challenge,
+            signature: body.signed_challenge,
+          })
+          signatureValid = sigResult.valid
+          sigFailReason = sigResult.reason
+        }
+
         if (!signatureValid) {
           request.log.warn(
-            { sessionId: session_id, deviceToken: device.deviceToken, sigFailReason: sigResult.reason },
-            'verifySignature failed',
+            { sessionId: session_id, deviceToken: device.deviceToken, sigFailReason },
+            'Signature verification failed',
           )
         }
 
@@ -259,7 +336,7 @@ const route: FastifyPluginAsync = async (fastify) => {
           where: { sessionId: session_id },
           data: {
             state: newState,
-            biometricUsed: body.biometric_used,
+            biometricUsed: biometricUsed,
             confidence,
             completedAt: new Date(),
           },

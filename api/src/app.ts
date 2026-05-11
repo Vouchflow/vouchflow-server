@@ -1,9 +1,12 @@
 import Fastify from 'fastify'
 import rateLimit from '@fastify/rate-limit'
+import cors from '@fastify/cors'
 import { redis } from './lib/redis.js'
 import responseHeaders from './plugins/responseHeaders.js'
 import enrollRoute from './routes/enroll.js'
 import verifyRoute from './routes/verify.js'
+import signRoute from './routes/sign.js'
+import jwksRoute from './routes/jwks.js'
 import deviceRoute from './routes/device.js'
 import customerRoute from './routes/customers.js'
 import statsRoute from './routes/stats.js'
@@ -17,6 +20,20 @@ export async function buildApp() {
   })
 
   // ── Plugins ────────────────────────────────────────────────────────────────
+  // CORS: the Web SDK runs at the customer's origin (e.g. app.trustysquire.ai)
+  // and talks to api.vouchflow.dev. Browsers preflight every cross-origin POST,
+  // and Authorization is a non-simple header, so without this every Web SDK
+  // request would fail at OPTIONS. Origin reflection is safe here — the API
+  // is authenticated by API key, not by origin or cookie. Credentialed mode is
+  // explicitly disabled.
+  await fastify.register(cors, {
+    origin: true,
+    credentials: false,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['authorization', 'content-type', 'vouchflow-api-version', 'idempotency-key'],
+    maxAge: 86400,
+  })
+
   await fastify.register(responseHeaders)
 
   // §7 Per-endpoint rate limits: configured on each route using the
@@ -33,6 +50,8 @@ export async function buildApp() {
   // ── Routes ─────────────────────────────────────────────────────────────────
   await fastify.register(enrollRoute,  { prefix: '/v1' })
   await fastify.register(verifyRoute,  { prefix: '/v1' })
+  await fastify.register(signRoute,    { prefix: '/v1' })
+  await fastify.register(jwksRoute,    { prefix: '/v1' })
   await fastify.register(deviceRoute,  { prefix: '/v1' })
   await fastify.register(customerRoute, { prefix: '/v1' })
   await fastify.register(statsRoute,    { prefix: '/v1' })
