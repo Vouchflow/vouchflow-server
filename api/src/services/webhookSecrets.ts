@@ -29,9 +29,17 @@ export async function decryptWebhookSecret(encrypted: Buffer): Promise<string> {
   return result[0].secret
 }
 
-export async function createWebhookEndpoint(customerId: string, url: string, rawSecret: string) {
+export async function createWebhookEndpoint(
+  customerId: string,
+  appId: string,
+  url: string,
+  rawSecret: string,
+) {
+  // chunk1-compile-fix: webhook endpoints now scope to an App. Helper updated
+  // to take appId. No callers exist in the codebase today; kept for parity
+  // with the route handler's pattern.
   const secretEncrypted = await encryptWebhookSecret(rawSecret)
   return prisma.webhookEndpoint.create({
-    data: { customerId, url, secretEncrypted },
+    data: { customerId, appId, url, secretEncrypted },
   })
 }

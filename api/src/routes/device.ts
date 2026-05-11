@@ -26,9 +26,12 @@ const route: FastifyPluginAsync = async (fastify) => {
         return reply.code(404).send({ error: { code: 'device_not_found', message: 'Device token not found.' } })
       }
 
-      // §7: read-scoped key must belong to the customer who owns the device
-      if (device.customerId !== request.customerId) {
-        return reply.code(403).send({ error: { code: 'forbidden', message: 'Device does not belong to this customer.' } })
+      // §7 + apps refactor: cross-app isolation. The read-scoped key must
+      // belong to the same App that enrolled the device. We 404 (not 403)
+      // for cross-app access so a sibling app within the same customer can't
+      // probe for device existence via differing error codes.
+      if (device.customerId !== request.customerId || device.appId !== request.appId) {
+        return reply.code(404).send({ error: { code: 'device_not_found', message: 'Device token not found.' } })
       }
 
       // Fetch most recent completed verification and network graph data in parallel

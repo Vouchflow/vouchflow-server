@@ -6,11 +6,12 @@
 // behaviour — not a development shortcut.
 //
 // Multi-tenant: iOS team_id and bundle_id, plus the Android package name and
-// signing-key SHA-256, are per-customer values stored on the Customer row.
-// Both root CAs (Apple App Attest, Google Hardware Attestation) are public
-// certs and remain in env — they're identical across customers.
+// signing-key SHA-256, are per-app values stored on the App row (apps
+// refactor; previously on Customer). Both root CAs (Apple App Attest, Google
+// Hardware Attestation) are public certs and remain in env — they're
+// identical across customers and apps.
 //
-// Required env vars (fallback when Customer row is missing values):
+// Required env vars (fallback when App row is missing values):
 //   iOS:     APPLE_APP_ATTEST_ROOT_CA  (always env — public root cert)
 //            APPLE_TEAM_ID, APPLE_BUNDLE_ID  (single-tenant fallback)
 //   Android: GOOGLE_HARDWARE_ATTESTATION_ROOT_CA  (always env — public roots,
@@ -44,8 +45,8 @@ export interface AttestationInput {
 
 /**
  * Per-call attestation configuration. iOS and Android values come from the
- * Customer row when present, falling back to process env when not — that
- * preserves the prior single-tenant deployment shape during migration.
+ * App row when present, falling back to process env when not — that preserves
+ * the prior single-tenant deployment shape during migration.
  */
 export interface AttestationConfig {
   // Apple App Attest. rootCa is a global Apple cert (env only).
@@ -53,7 +54,7 @@ export interface AttestationConfig {
   appleTeamId?: string
   appleBundleId?: string
   // Android Keystore Attestation. Root CA(s) are public Google certs (env
-  // only); package name and signing-key SHA-256 are per-customer.
+  // only); package name and signing-key SHA-256 are per-app.
   googleAttestationRootCa?: string
   androidPackageName?: string
   androidSigningKeySha256?: string
@@ -65,12 +66,15 @@ export interface AttestationResult {
 }
 
 /**
- * Builds an AttestationConfig from a Customer row, layering env vars beneath
- * for backwards compatibility with the single-tenant deployment. Pass `null`
- * when the customer record is unavailable to use env-only.
+ * Builds an AttestationConfig from an App row, layering env vars beneath for
+ * backwards compatibility with the single-tenant deployment. Pass `null`
+ * when no App row is available to use env-only.
+ *
+ * Apps refactor: the four attestation fields moved from Customer to App. The
+ * legacy `Customer`-shaped callers were updated in chunk 3 to pass the App.
  */
 export function buildAttestationConfig(
-  customer: {
+  app: {
     iosTeamId?: string | null
     iosBundleId?: string | null
     androidPackageName?: string | null
@@ -79,12 +83,12 @@ export function buildAttestationConfig(
 ): AttestationConfig {
   return {
     appleRootCa: process.env.APPLE_APP_ATTEST_ROOT_CA,
-    appleTeamId: customer?.iosTeamId ?? process.env.APPLE_TEAM_ID,
-    appleBundleId: customer?.iosBundleId ?? process.env.APPLE_BUNDLE_ID,
+    appleTeamId: app?.iosTeamId ?? process.env.APPLE_TEAM_ID,
+    appleBundleId: app?.iosBundleId ?? process.env.APPLE_BUNDLE_ID,
     googleAttestationRootCa: process.env.GOOGLE_HARDWARE_ATTESTATION_ROOT_CA,
-    androidPackageName: customer?.androidPackageName ?? process.env.ANDROID_PACKAGE_NAME,
+    androidPackageName: app?.androidPackageName ?? process.env.ANDROID_PACKAGE_NAME,
     androidSigningKeySha256:
-      customer?.androidSigningKeySha256 ?? process.env.ANDROID_SIGNING_KEY_SHA256,
+      app?.androidSigningKeySha256 ?? process.env.ANDROID_SIGNING_KEY_SHA256,
   }
 }
 

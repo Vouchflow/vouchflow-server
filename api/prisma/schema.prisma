@@ -17,30 +17,85 @@ datasource db {
 model Customer {
   id                String    @id @default(cuid())
   email             String?   @unique
-  sandboxWriteKey   String?   @unique @map("sandbox_write_key")
-  sandboxReadKey    String?   @unique @map("sandbox_read_key")
   webhookSecret     String?   @map("webhook_secret")
   orgName           String?   @map("org_name")
   billingEmail      String?   @map("billing_email")
+  // Account-wide default for verify(). Kept for back-compat; per-app override
+  // lives at App.verifyMinConfidence and wins when set.
   minimumConfidence String?   @map("minimum_confidence")
   networkOptIn      Boolean   @default(true) @map("network_opt_in")
 
-  // Per-customer attestation parameters. Set by the customer during onboarding;
-  // null means attestation isn't configured yet — the server treats that as
-  // attestation_verified=false, confidence_ceiling=medium.
-  // (§7 attestation rules; required for multi-tenant attestation validation.)
-  androidPackageName      String? @map("android_package_name")
-  androidSigningKeySha256 String? @map("android_signing_key_sha256")
-  iosTeamId               String? @map("ios_team_id")
-  iosBundleId             String? @map("ios_bundle_id")
+  // Sandbox keys + attestation moved to App in the apps refactor. The columns
+  // are dropped from this table by the apps migration after the backfill.
 
   createdAt         DateTime  @default(now()) @map("created_at")
   updatedAt         DateTime  @updatedAt @map("updated_at")
 
-  apiKeys  ApiKey[]
-  devices  Device[]
+  apps          App[]
+  apiKeys       ApiKey[]   // kept for back-compat in customer-scope queries
+  devices       Device[]   // kept for back-compat in customer-scope queries
+  verifications Verification[]
+  webhookEndpoints WebhookEndpoint[]
 
   @@map("customers")
+}
+
+// First-class child of Customer. Holds per-app attestation, sandbox keys, Web
+// SDK config, and signPayload/verify confidence policy. Multiple apps per
+// customer are supported; the migration creates one "Default App" per existing
+// customer and backfills all foreign keys. SDKs resolve the App from the API
+// key in apiKeyAuth.ts; SDK callers never know about Apps.
+model App {
+  id          String   @id @default(cuid())
+  customerId  String   @map("customer_id")
+  name        String                                            // "Acme iOS"
+  slug        String                                            // "acme-ios" — unique within customer
+  description String?                                           // optional
+
+  // Per-app sandbox keys. Auto-generated on App creation; cannot be rotated —
+  // archive the App and create a new one if a sandbox key leaks.
+  sandboxWriteKey String? @unique @map("sandbox_write_key")
+  sandboxReadKey  String? @unique @map("sandbox_read_key")
+
+  // Per-app attestation parameters. iOS uses Team ID + Bundle ID; Android
+  // uses package name + signing-cert SHA-256. Null means attestation isn't
+  // configured for that platform — the server treats verifications from
+  // that platform as attestation_verified=false, ceiling=medium.
+  iosTeamId               String? @map("ios_team_id")
+  iosBundleId             String? @map("ios_bundle_id")
+  androidPackageName      String? @map("android_package_name")
+  androidSigningKeySha256 String? @map("android_signing_key_sha256")
+
+  // Web SDK config. Off by default; flipped on once the customer has set the
+  // relying-party ID + at least one allowed origin. Origins must be https://
+  // (or http://localhost during development — same rule the WebAuthn verifier
+  // already enforces in services/webauthn.ts).
+  webSdkEnabled     Boolean  @default(false) @map("web_sdk_enabled")
+  webRpId           String?  @map("web_rp_id")
+  webAllowedOrigins String[] @default([]) @map("web_allowed_origins")
+
+  // Confidence policy (per-app override of Customer-level defaults).
+  // `null` means inherit from Customer.minimumConfidence (verify) or default
+  // 'high' (signPayload). contextConfidenceOverrides is a
+  // Record<string, 'low' | 'medium' | 'high'> — per-context overrides that
+  // cannot weaken below the corresponding minimum per the signPayload RFC.
+  verifyMinConfidence        String? @map("verify_min_confidence")
+  signPayloadMinConfidence   String? @map("sign_payload_min_confidence")
+  contextConfidenceOverrides Json    @default("{}") @map("context_confidence_overrides")
+
+  archivedAt DateTime? @map("archived_at")
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+
+  customer         Customer          @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  apiKeys          ApiKey[]
+  devices          Device[]
+  verifications    Verification[]
+  webhookEndpoints WebhookEndpoint[]
+
+  @@unique([customerId, slug])
+  @@index([customerId, archivedAt])
+  @@map("apps")
 }
 
 // §13: Hash-stored, scoped (write / read), 14-day rotation overlap.
@@ -48,6 +103,7 @@ model Customer {
 model ApiKey {
   id         String   @id @default(cuid())
   customerId String   @map("customer_id")
+  appId      String   @map("app_id")            // post-apps-migration: every live key belongs to an App
   keyHash    String   @unique @map("key_hash")   // SHA-256 of raw key
   scope      ApiScope
   // §13: 14-day rotation overlap — deprecated keys remain valid until deprecatedAt + 14 days
@@ -57,8 +113,10 @@ model ApiKey {
   createdAt     DateTime  @default(now()) @map("created_at")
 
   customer Customer @relation(fields: [customerId], references: [id])
+  app      App      @relation(fields: [appId], references: [id], onDelete: Cascade)
 
   @@index([customerId])
+  @@index([appId])
   @@map("api_keys")
 }
 
@@ -73,6 +131,7 @@ model Device {
   id                 String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   deviceToken        String   @unique @map("device_token")
   customerId         String   @map("customer_id")
+  appId              String   @map("app_id")    // post-apps-migration: every device belongs to an App
   publicKey          String   @map("public_key")
   keyFingerprint     String   @map("key_fingerprint")  // links to network graph, never returned in API
   platform           String
@@ -95,11 +154,13 @@ model Device {
 
   verifications Verification[]
   customer      Customer        @relation(fields: [customerId], references: [id])
+  app           App             @relation(fields: [appId], references: [id], onDelete: Cascade)
 
   @@index([deviceToken])
   @@index([customerId])
   @@index([keyFingerprint])
   @@index([customerId, isSandbox])
+  @@index([appId, isSandbox])
   @@map("devices")
 }
 
@@ -108,6 +169,7 @@ model Verification {
   sessionId        String    @unique @map("session_id")
   deviceId         String?   @map("device_id") @db.Uuid
   customerId       String    @map("customer_id")
+  appId            String    @map("app_id")     // post-apps-migration: every verification belongs to an App
   challenge        String
   challengeConsumed Boolean  @default(false) @map("challenge_consumed")
   state            String    @default("INITIATED")
@@ -143,11 +205,14 @@ model Verification {
   // env toggle filters on this so production view doesn't include test data.
   isSandbox             Boolean  @default(true) @map("is_sandbox")
 
-  device Device? @relation(fields: [deviceId], references: [id])
+  device   Device?  @relation(fields: [deviceId], references: [id])
+  customer Customer @relation(fields: [customerId], references: [id])
+  app      App      @relation(fields: [appId], references: [id], onDelete: Cascade)
 
   @@index([sessionId])
   @@index([customerId])
   @@index([customerId, isSandbox])
+  @@index([appId, isSandbox])
   @@map("verifications")
 }
 
@@ -233,12 +298,17 @@ model SigningKey {
 model WebhookEndpoint {
   id               String   @id @default(cuid())
   customerId       String   @map("customer_id")
+  appId            String   @map("app_id")    // post-apps-migration: every endpoint belongs to an App
   url              String
   events           String[] @default([])
   secretEncrypted  Bytes    @map("secret_encrypted")  // pgp_sym_encrypt(raw_secret, key)
   createdAt        DateTime @default(now()) @map("created_at")
 
+  customer Customer @relation(fields: [customerId], references: [id])
+  app      App      @relation(fields: [appId], references: [id], onDelete: Cascade)
+
   @@index([customerId])
+  @@index([appId])
   @@map("webhook_endpoints")
 }
 

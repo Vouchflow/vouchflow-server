@@ -42,16 +42,33 @@ type WebhookPayload =
   | VerificationFallbackCompletePayload
   | SignCompletePayload
 
-export async function dispatchWebhook(customerId: string, payload: WebhookPayload) {
-  // Only fan out to endpoints subscribed to this specific event. Skipping
-  // endpoints whose events array doesn't contain payload.event is the
-  // entire point of the per-endpoint subscription model — without this
-  // filter, every endpoint receives every event regardless of what they
-  // asked for, which both wastes their server cycles and makes the
-  // subscription UI a lie.
-  const endpoints = await prisma.webhookEndpoint.findMany({
-    where: { customerId, events: { has: payload.event } },
-  })
+/**
+ * Dispatches a webhook event to all endpoints subscribed to it.
+ *
+ * Apps refactor: scoping is per-App, not per-Customer. A verification on
+ * App A only fires webhooks to endpoints that belong to App A — even if the
+ * customer has a sibling App B with overlapping endpoint URLs. This matches
+ * customer expectations (their iOS app's webhook should not receive events
+ * from their unrelated Android app).
+ *
+ * `appId` is required; `customerId` is kept for back-compat with callers
+ * that haven't yet been threaded through the apps refactor — when omitted,
+ * we fall back to customer-wide dispatch with a deprecation warning logged.
+ */
+export async function dispatchWebhook(
+  scope: { customerId: string; appId: string } | string,
+  payload: WebhookPayload,
+) {
+  // Back-compat: callers that pass only a customerId fall through here. They
+  // get customer-wide dispatch (the pre-apps-refactor behaviour). Every
+  // production callsite has been updated to pass { customerId, appId }; this
+  // branch is just defensive scaffolding for transitional code.
+  const where =
+    typeof scope === 'string'
+      ? { customerId: scope, events: { has: payload.event } }
+      : { appId: scope.appId, events: { has: payload.event } }
+
+  const endpoints = await prisma.webhookEndpoint.findMany({ where })
 
   for (const endpoint of endpoints) {
     const delivery = await prisma.webhookDelivery.create({

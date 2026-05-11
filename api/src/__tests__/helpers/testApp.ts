@@ -30,6 +30,10 @@ export async function createSandboxCustomer(opts: {
   iosTeamId?: string | null
   iosBundleId?: string | null
 } = {}) {
+  // Apps refactor: a customer's sandbox keys and attestation params live on
+  // their default App now. createSandboxCustomer creates both in a single
+  // Prisma transaction and returns the App alongside the Customer so callers
+  // that need request.appId fixtures (most route tests) have it.
   const id = `cust_${crypto.randomBytes(8).toString('hex')}`
   const sandboxWriteKey = `vsk_sandbox_${crypto.randomBytes(20).toString('hex')}`
   const sandboxReadKey  = `vsk_sandbox_read_${crypto.randomBytes(20).toString('hex')}`
@@ -37,22 +41,42 @@ export async function createSandboxCustomer(opts: {
     data: {
       id,
       email: opts.email ?? `${id}@test.local`,
-      sandboxWriteKey,
-      sandboxReadKey,
-      androidPackageName:      opts.androidPackageName ?? null,
-      androidSigningKeySha256: opts.androidSigningKeySha256 ?? null,
-      iosTeamId:               opts.iosTeamId ?? null,
-      iosBundleId:             opts.iosBundleId ?? null,
+      apps: {
+        create: {
+          name: 'Default App',
+          slug: 'default',
+          sandboxWriteKey,
+          sandboxReadKey,
+          androidPackageName:      opts.androidPackageName ?? null,
+          androidSigningKeySha256: opts.androidSigningKeySha256 ?? null,
+          iosTeamId:               opts.iosTeamId ?? null,
+          iosBundleId:             opts.iosBundleId ?? null,
+          signPayloadMinConfidence: 'high',
+        },
+      },
     },
+    include: { apps: true },
   })
-  return { customer, sandboxWriteKey, sandboxReadKey }
+  const app = customer.apps[0]!
+  return { customer, app, sandboxWriteKey, sandboxReadKey }
 }
 
 export async function createLiveKey(
   customerId: string,
   scope: 'write' | 'read',
-  opts: { deprecated?: boolean; deprecatedAt?: Date | null } = {},
+  opts: { deprecated?: boolean; deprecatedAt?: Date | null; appId?: string } = {},
 ) {
+  // chunk1 fixture update: live keys belong to an App. If caller doesn't pass
+  // appId explicitly, look up the customer's default app.
+  let appId = opts.appId
+  if (!appId) {
+    const app = await prisma.app.findFirst({
+      where: { customerId, archivedAt: null },
+      orderBy: { createdAt: 'asc' },
+    })
+    if (!app) throw new Error(`createLiveKey: customer ${customerId} has no app — call createSandboxCustomer first`)
+    appId = app.id
+  }
   const rawKey = scope === 'write'
     ? `vsk_live_${crypto.randomBytes(20).toString('hex')}`
     : `vsk_live_read_${crypto.randomBytes(20).toString('hex')}`
@@ -60,6 +84,7 @@ export async function createLiveKey(
   const apiKey = await prisma.apiKey.create({
     data: {
       customerId,
+      appId,
       keyHash,
       scope,
       deprecated:   opts.deprecated   ?? false,
@@ -69,22 +94,35 @@ export async function createLiveKey(
   return { apiKey, rawKey }
 }
 
-/** Truncates per-test Customer / ApiKey / Device rows. Other tables cascade
- *  via FK or are left alone (idempotency_records, network_events). */
+/** Truncates per-test Customer / ApiKey / Device rows. Apps cascade-delete
+ *  with Customer, so listing customers last in the TRUNCATE order is enough.
+ *  Other tables cascade via FK or are left alone (idempotency_records,
+ *  network_events). */
 export async function cleanDb(): Promise<void> {
   await prisma.$executeRawUnsafe(
-    'TRUNCATE TABLE "verifications", "devices", "api_keys", "webhook_deliveries", "webhook_endpoints", "idempotency_records", "customers" RESTART IDENTITY CASCADE'
+    'TRUNCATE TABLE "verifications", "devices", "api_keys", "webhook_deliveries", "webhook_endpoints", "idempotency_records", "apps", "customers" RESTART IDENTITY CASCADE'
   )
 }
 
-/** Mint a Device row directly. Bypasses the enroll route. */
+/** Mint a Device row directly. Bypasses the enroll route. Uses the customer's
+ *  default app if appId isn't supplied. */
 export async function createDevice(
   customerId: string,
-  opts: { platform?: string; status?: string; enrolledAt?: Date; isSandbox?: boolean } = {},
+  opts: { platform?: string; status?: string; enrolledAt?: Date; isSandbox?: boolean; appId?: string } = {},
 ) {
+  let appId = opts.appId
+  if (!appId) {
+    const app = await prisma.app.findFirst({
+      where: { customerId, archivedAt: null },
+      orderBy: { createdAt: 'asc' },
+    })
+    if (!app) throw new Error(`createDevice: customer ${customerId} has no app — call createSandboxCustomer first`)
+    appId = app.id
+  }
   return prisma.device.create({
     data: {
       customerId,
+      appId,
       deviceToken: `dvt_${crypto.randomBytes(8).toString('hex')}`,
       publicKey: crypto.randomBytes(64).toString('base64'),
       keyFingerprint: crypto.randomBytes(32).toString('hex'),
@@ -109,12 +147,23 @@ export async function createVerification(
     createdAt?: Date
     completedAt?: Date | null
     isSandbox?: boolean
+    appId?: string
   } = {},
 ) {
+  let appId = opts.appId
+  if (!appId) {
+    const app = await prisma.app.findFirst({
+      where: { customerId, archivedAt: null },
+      orderBy: { createdAt: 'asc' },
+    })
+    if (!app) throw new Error(`createVerification: customer ${customerId} has no app — call createSandboxCustomer first`)
+    appId = app.id
+  }
   const createdAt = opts.createdAt ?? new Date()
   return prisma.verification.create({
     data: {
       customerId,
+      appId,
       deviceId,
       sessionId: `ses_${crypto.randomBytes(8).toString('hex')}`,
       challenge: crypto.randomBytes(32).toString('base64'),

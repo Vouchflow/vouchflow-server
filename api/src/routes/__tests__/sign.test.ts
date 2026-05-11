@@ -22,6 +22,13 @@ const RP_ID = 'test.local'
 /** Generate an EC P-256 keypair, mint a Web SDK device row, return the raw
  *  keys + a function that produces a WebAuthn assertion for a given challenge. */
 async function makeWebDevice(customerId: string) {
+  // Apps refactor: device rows need appId. Look up the customer's default app.
+  const app = await prisma.app.findFirst({
+    where: { customerId, archivedAt: null },
+    orderBy: { createdAt: 'asc' },
+  })
+  if (!app) throw new Error(`makeWebDevice: customer ${customerId} has no app`)
+
   const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
   const publicKeyBase64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
 
@@ -32,6 +39,7 @@ async function makeWebDevice(customerId: string) {
   await prisma.device.create({
     data: {
       customerId,
+      appId: app.id,
       deviceToken,
       publicKey: publicKeyBase64,
       keyFingerprint: crypto.createHash('sha256').update(publicKeyBase64).digest('hex'),
@@ -107,6 +115,13 @@ async function makeMobileSignDevice(
   platform: 'ios' | 'android',
   opts: { ageDays?: number } = {},
 ) {
+  // Apps refactor: device rows need appId.
+  const app = await prisma.app.findFirst({
+    where: { customerId, archivedAt: null },
+    orderBy: { createdAt: 'asc' },
+  })
+  if (!app) throw new Error(`makeMobileSignDevice: customer ${customerId} has no app`)
+
   const { privateKey, publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
   const publicKeyBase64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
   const deviceToken = `dvt_${crypto.randomBytes(8).toString('hex')}`
@@ -118,6 +133,7 @@ async function makeMobileSignDevice(
   await prisma.device.create({
     data: {
       customerId,
+      appId: app.id,
       deviceToken,
       publicKey: publicKeyBase64,
       keyFingerprint: crypto.createHash('sha256').update(publicKeyBase64).digest('hex'),
@@ -222,10 +238,11 @@ d('POST /v1/sign — initiate', () => {
   })
 
   it('422 for an exotic platform device', async () => {
-    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { customer, app: appRow, sandboxWriteKey } = await createSandboxCustomer()
     const device = await prisma.device.create({
       data: {
         customerId: customer.id,
+        appId: appRow.id,
         deviceToken: `dvt_${crypto.randomBytes(8).toString('hex')}`,
         publicKey: crypto.randomBytes(64).toString('base64'),
         keyFingerprint: crypto.randomBytes(32).toString('hex'),
@@ -245,10 +262,11 @@ d('POST /v1/sign — initiate', () => {
   })
 
   it('422 when minimum_confidence exceeds device ceiling', async () => {
-    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { customer, app: appRow, sandboxWriteKey } = await createSandboxCustomer()
     const device = await prisma.device.create({
       data: {
         customerId: customer.id,
+        appId: appRow.id,
         deviceToken: `dvt_${crypto.randomBytes(8).toString('hex')}`,
         publicKey: crypto.randomBytes(64).toString('base64'),
         keyFingerprint: crypto.randomBytes(32).toString('hex'),

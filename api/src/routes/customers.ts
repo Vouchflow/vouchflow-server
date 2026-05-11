@@ -1,19 +1,7 @@
 import type { FastifyInstance } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import crypto from 'node:crypto'
-
-function verifyAdminKey(authHeader: string | undefined): boolean {
-  const adminKey = process.env.ADMIN_KEY
-  if (!adminKey) return false
-  if (!authHeader?.startsWith('Bearer ')) return false
-  const provided = authHeader.slice(7)
-  // Constant-time comparison
-  try {
-    return crypto.timingSafeEqual(Buffer.from(provided), Buffer.from(adminKey))
-  } catch {
-    return false
-  }
-}
+import { verifyAdminKey } from '../lib/adminAuth.js'
 
 export default async function customerRoute(fastify: FastifyInstance) {
 
@@ -39,154 +27,230 @@ export default async function customerRoute(fastify: FastifyInstance) {
 
       const email = request.body.email.toLowerCase().trim()
 
-      let customer = await prisma.customer.findUnique({ where: { email } })
+      let customer = await prisma.customer.findUnique({
+        where: { email },
+        include: { apps: { where: { archivedAt: null }, orderBy: { createdAt: 'asc' }, take: 1 } },
+      })
 
+      // chunk1-compile-fix: sandbox keys live on App after the apps refactor.
+      // POST /v1/customers now also creates a default App when a new customer
+      // signs up. Chunk 2 reshapes this into the explicit App-creation flow,
+      // but for compile-correctness we co-create the App here.
       if (!customer) {
-        customer = await prisma.customer.create({
+        const sandboxWriteKey = `vsk_sandbox_${crypto.randomBytes(20).toString('hex')}`
+        const sandboxReadKey  = `vsk_sandbox_read_${crypto.randomBytes(20).toString('hex')}`
+        const created = await prisma.customer.create({
           data: {
             email,
-            sandboxWriteKey: `vsk_sandbox_${crypto.randomBytes(20).toString('hex')}`,
-            sandboxReadKey:  `vsk_sandbox_read_${crypto.randomBytes(20).toString('hex')}`,
-            webhookSecret:   `whsec_${crypto.randomBytes(20).toString('hex')}`,
+            webhookSecret: `whsec_${crypto.randomBytes(20).toString('hex')}`,
+            apps: {
+              create: {
+                name: 'Default App',
+                slug: 'default',
+                sandboxWriteKey,
+                sandboxReadKey,
+                signPayloadMinConfidence: 'high',
+              },
+            },
           },
+          include: { apps: { where: { archivedAt: null }, orderBy: { createdAt: 'asc' }, take: 1 } },
         })
+        customer = created
       }
+
+      const defaultApp = customer.apps[0]
 
       return reply.send({
         id:              customer.id,
         email:           customer.email,
-        sandboxWriteKey: customer.sandboxWriteKey,
-        sandboxReadKey:  customer.sandboxReadKey,
+        sandboxWriteKey: defaultApp?.sandboxWriteKey ?? null,
+        sandboxReadKey:  defaultApp?.sandboxReadKey ?? null,
         webhookSecret:   customer.webhookSecret,
         createdAt:       customer.createdAt,
       })
     }
   )
 
-  // Hard cap on simultaneously-active live keys per customer. Matches Stripe's
-  // limit and gives us headroom to debug "we hit the limit" support tickets
-  // before infinite-key sprawl becomes a security review burden.
-  const MAX_ACTIVE_KEYS_PER_CUSTOMER = 10
-
-  // POST /v1/customers/:id/live-keys
-  // Create one or more live keys. Raw keys returned ONCE — only hashes stored.
-  // Existing keys are NOT deprecated; customers may run up to MAX_ACTIVE_KEYS
-  // simultaneously (per-platform / per-environment isolation).
-  //
-  // Body shape:
-  //   {} or { scope: 'pair' }   → write+read pair (back-compat default)
-  //   { scope: 'write' }        → single write key
-  //   { scope: 'read' }         → single read key
-  fastify.post<{
+  // GET /v1/customers/:id/overview
+  // Admin-keyed customer-wide aggregation across all the customer's
+  // non-archived apps. The dashboard's account-level overview view calls
+  // this. Per-app stats live at /v1/customers/:id/stats (SDK-key auth) —
+  // the admin path is separate to avoid an auth-mode branch on a single URL.
+  fastify.get<{
     Params: { id: string }
-    Body: { scope?: 'pair' | 'write' | 'read' }
+    Querystring: { range?: string; env?: string }
   }>(
+    '/customers/:id/overview',
+    {
+      config: { rateLimit: { max: 60, timeWindow: '1 minute' } },
+    },
+    async (request, reply) => {
+      if (!verifyAdminKey(request.headers.authorization)) {
+        return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
+      }
+      const range = request.query.range ?? '7d'
+      const days = ({ '1d': 1, '7d': 7, '30d': 30, '90d': 90, '24h': 1 } as Record<string, number>)[range]
+      if (days === undefined) {
+        return reply.code(400).send({ error: { code: 'invalid_request', message: 'range must be 1d|7d|30d|90d.' } })
+      }
+      const isSandbox = request.query.env !== 'production'
+      const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000)
+      const customerId = request.params.id
+
+      const SUCCESS_STATES = ['COMPLETED', 'FALLBACK_COMPLETE']
+      const FAILURE_STATES = ['FAILED', 'EXPIRED', 'FALLBACK_LOCKED', 'FALLBACK_EXPIRED']
+
+      // Aggregate across all of the customer's non-archived apps. Archived
+      // apps are excluded so the overview reflects production reality, not
+      // historical data the customer has explicitly retired.
+      const activeAppIds = (await prisma.app.findMany({
+        where: { customerId, archivedAt: null },
+        select: { id: true },
+      })).map(a => a.id)
+
+      if (activeAppIds.length === 0) {
+        return reply.send({
+          appCount: 0,
+          verificationCount: 0,
+          deviceCount: 0,
+          successRatePct: null,
+          highConfidencePct: null,
+          perApp: [],
+        })
+      }
+
+      const [verificationCount, deviceRows, successCount, failureCount, confidenceBreakdown, perApp] = await Promise.all([
+        prisma.verification.count({
+          where: { appId: { in: activeAppIds }, isSandbox, createdAt: { gte: since }, state: { in: SUCCESS_STATES } },
+        }),
+        prisma.device.findMany({
+          where: { appId: { in: activeAppIds }, isSandbox, status: 'active', enrolledAt: { gte: since } },
+          select: { keyFingerprint: true },
+          distinct: ['keyFingerprint'],
+        }),
+        prisma.verification.count({
+          where: { appId: { in: activeAppIds }, isSandbox, createdAt: { gte: since }, state: { in: SUCCESS_STATES } },
+        }),
+        prisma.verification.count({
+          where: { appId: { in: activeAppIds }, isSandbox, createdAt: { gte: since }, state: { in: FAILURE_STATES } },
+        }),
+        prisma.verification.groupBy({
+          by: ['confidence'],
+          where: { appId: { in: activeAppIds }, isSandbox, createdAt: { gte: since }, confidence: { not: null } },
+          _count: { _all: true },
+        }),
+        prisma.verification.groupBy({
+          by: ['appId'],
+          where: { appId: { in: activeAppIds }, isSandbox, createdAt: { gte: since }, state: { in: SUCCESS_STATES } },
+          _count: { _all: true },
+        }),
+      ])
+
+      const totalConfidence = confidenceBreakdown.reduce((acc, r) => acc + r._count._all, 0)
+      const high = confidenceBreakdown.find(r => r.confidence === 'high')?._count._all ?? 0
+      const highConfidencePct = totalConfidence === 0 ? null : (high / totalConfidence) * 100
+      const totalAttempts = successCount + failureCount
+      const successRatePct = totalAttempts === 0 ? null : (successCount / totalAttempts) * 100
+
+      return reply.send({
+        appCount: activeAppIds.length,
+        verificationCount,
+        deviceCount: deviceRows.length,
+        successRatePct,
+        highConfidencePct,
+        perApp: perApp.map(r => ({ appId: r.appId, verificationCount: r._count._all })),
+      })
+    }
+  )
+
+  // ── Customer-scoped live-keys: deprecation shim ────────────────────────
+  //
+  // Live keys moved to App scope (POST /v1/customers/:id/apps/:appId/live-keys
+  // in apps.ts). These customer-scoped endpoints stay as transitional shims
+  // for callers that hardcoded the old paths:
+  //   - exactly one non-archived app  → 308 redirect to the app's endpoint,
+  //     plus a `Vouchflow-Deprecation` header
+  //   - 0 or 2+ non-archived apps     → 409 ambiguous_app (caller must pick)
+  // The shim does not create or modify keys directly anymore.
+
+  async function resolveSingleApp(customerId: string) {
+    return prisma.app.findMany({
+      where: { customerId, archivedAt: null },
+      orderBy: { createdAt: 'asc' },
+      select: { id: true, name: true, slug: true },
+    })
+  }
+
+  function ambiguous(reply: any, apps: { id: string; name: string }[]) {
+    return reply.code(409).send({
+      error: {
+        code: 'ambiguous_app',
+        message: 'Customer has multiple apps. Use the app-scoped endpoint.',
+      },
+      apps: apps.map(a => ({ id: a.id, name: a.name })),
+    })
+  }
+
+  // POST /v1/customers/:id/live-keys — shim → POST /apps/:appId/live-keys
+  fastify.post<{ Params: { id: string }; Body: { scope?: 'pair' | 'write' | 'read' } }>(
     '/customers/:id/live-keys',
     async (request, reply) => {
       if (!verifyAdminKey(request.headers.authorization)) {
         return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
       }
-
-      const customerId = request.params.id
-      const scope = request.body?.scope ?? 'pair'
-      if (scope !== 'pair' && scope !== 'write' && scope !== 'read') {
-        return reply.code(400).send({
-          error: { code: 'invalid_request', message: 'scope must be "pair", "write", or "read".' },
-        })
+      const apps = await resolveSingleApp(request.params.id)
+      if (apps.length === 0) {
+        return reply.code(409).send({ error: { code: 'no_app', message: 'Customer has no active apps.' } })
       }
-
-      const keysToCreate = scope === 'pair' ? 2 : 1
-      const activeCount = await prisma.apiKey.count({
-        where: { customerId, deprecated: false },
-      })
-      if (activeCount + keysToCreate > MAX_ACTIVE_KEYS_PER_CUSTOMER) {
-        return reply.code(409).send({
-          error: {
-            code: 'key_limit_reached',
-            message: `Maximum ${MAX_ACTIVE_KEYS_PER_CUSTOMER} active live keys per customer. Revoke an existing key first.`,
-          },
-        })
-      }
-
-      const hashKey = (k: string) => crypto.createHash('sha256').update(k).digest('hex')
-      const generate = (s: 'write' | 'read'): { rawKey: string; hash: string } => {
-        const raw = s === 'write'
-          ? `vsk_live_${crypto.randomBytes(20).toString('hex')}`
-          : `vsk_live_read_${crypto.randomBytes(20).toString('hex')}`
-        return { rawKey: raw, hash: hashKey(raw) }
-      }
-
-      if (scope === 'pair') {
-        const w = generate('write')
-        const r = generate('read')
-        const [writeKey, readKey] = await Promise.all([
-          prisma.apiKey.create({ data: { customerId, keyHash: w.hash, scope: 'write' } }),
-          prisma.apiKey.create({ data: { customerId, keyHash: r.hash, scope: 'read'  } }),
-        ])
-        return reply.send({
-          writeKey: { id: writeKey.id, rawKey: w.rawKey, scope: 'write', createdAt: writeKey.createdAt },
-          readKey:  { id: readKey.id,  rawKey: r.rawKey, scope: 'read',  createdAt: readKey.createdAt  },
-        })
-      }
-
-      // single-scope creation
-      const g = generate(scope)
-      const created = await prisma.apiKey.create({
-        data: { customerId, keyHash: g.hash, scope },
-      })
-      return reply.send({
-        key: { id: created.id, rawKey: g.rawKey, scope, createdAt: created.createdAt },
-      })
+      if (apps.length > 1) return ambiguous(reply, apps)
+      reply.header('Vouchflow-Deprecation', 'customer-scoped-live-keys')
+      return reply
+        .code(308)
+        .header('Location', `/v1/customers/${request.params.id}/apps/${apps[0].id}/live-keys`)
+        .send({ error: { code: 'moved', message: 'Endpoint moved to app scope.' } })
     }
   )
 
-  // GET /v1/customers/:id/live-keys
-  // Returns metadata for active (non-deprecated) live keys. No raw values.
+  // GET /v1/customers/:id/live-keys — shim → GET /apps/:appId/live-keys
   fastify.get<{ Params: { id: string } }>(
     '/customers/:id/live-keys',
     async (request, reply) => {
       if (!verifyAdminKey(request.headers.authorization)) {
         return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
       }
-
-      const keys = await prisma.apiKey.findMany({
-        where:   { customerId: request.params.id, deprecated: false },
-        select:  { id: true, scope: true, createdAt: true, lastUsedAt: true },
-        orderBy: { createdAt: 'desc' },
-      })
-
-      return reply.send({ keys })
+      const apps = await resolveSingleApp(request.params.id)
+      if (apps.length === 0) {
+        return reply.code(409).send({ error: { code: 'no_app', message: 'Customer has no active apps.' } })
+      }
+      if (apps.length > 1) return ambiguous(reply, apps)
+      reply.header('Vouchflow-Deprecation', 'customer-scoped-live-keys')
+      return reply
+        .code(308)
+        .header('Location', `/v1/customers/${request.params.id}/apps/${apps[0].id}/live-keys`)
+        .send({ error: { code: 'moved', message: 'Endpoint moved to app scope.' } })
     }
   )
 
-  // DELETE /v1/customers/:id/live-keys/:keyId
-  // Revokes a single live key by marking it deprecated. The 14-day grace
-  // window declared in the schema (deprecatedAt + 14d) still applies — we
-  // don't immediately invalidate so callers mid-flight aren't 401'd.
+  // DELETE /v1/customers/:id/live-keys/:keyId — shim. We can resolve the key's
+  // appId directly, so the redirect is unambiguous regardless of app count.
   fastify.delete<{ Params: { id: string; keyId: string } }>(
     '/customers/:id/live-keys/:keyId',
     async (request, reply) => {
       if (!verifyAdminKey(request.headers.authorization)) {
         return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
       }
-
-      const { id: customerId, keyId } = request.params
       const key = await prisma.apiKey.findFirst({
-        where: { id: keyId, customerId },
+        where: { id: request.params.keyId, customerId: request.params.id },
+        select: { appId: true },
       })
       if (!key) {
         return reply.code(404).send({ error: { code: 'not_found', message: 'Key not found.' } })
       }
-      if (key.deprecated) {
-        return reply.code(409).send({ error: { code: 'already_revoked', message: 'Key is already deprecated.' } })
-      }
-
-      const updated = await prisma.apiKey.update({
-        where: { id: keyId },
-        data:  { deprecated: true, deprecatedAt: new Date() },
-        select: { id: true, scope: true, deprecatedAt: true },
-      })
-      return reply.send({ key: updated })
+      reply.header('Vouchflow-Deprecation', 'customer-scoped-live-keys')
+      return reply
+        .code(308)
+        .header('Location', `/v1/customers/${request.params.id}/apps/${key.appId}/live-keys/${request.params.keyId}`)
+        .send({ error: { code: 'moved', message: 'Endpoint moved to app scope.' } })
     }
   )
 
@@ -225,6 +289,11 @@ export default async function customerRoute(fastify: FastifyInstance) {
 
   // PATCH /v1/customers/:id
   // Update mutable customer fields. Authenticated with ADMIN_KEY.
+  //
+  // chunk1-compile-fix: the four attestation fields used to live on Customer;
+  // they moved to App in the apps refactor. Chunk 2 introduces the per-app
+  // PATCH endpoint that owns those validators. This handler only accepts
+  // customer-level fields now.
   fastify.patch<{
     Params: { id: string }
     Body: {
@@ -232,11 +301,6 @@ export default async function customerRoute(fastify: FastifyInstance) {
       billingEmail?: string
       minimumConfidence?: string
       networkOptIn?: boolean
-      // Per-customer attestation parameters. Strings to clear (null) or set.
-      androidPackageName?: string | null
-      androidSigningKeySha256?: string | null
-      iosTeamId?: string | null
-      iosBundleId?: string | null
     }
   }>(
     '/customers/:id',
@@ -245,49 +309,13 @@ export default async function customerRoute(fastify: FastifyInstance) {
         return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
       }
 
-      const {
-        orgName, billingEmail, minimumConfidence, networkOptIn,
-        androidPackageName, androidSigningKeySha256, iosTeamId, iosBundleId,
-      } = request.body
-
-      // Light-touch validation — these values feed attestation comparisons,
-      // so a typo here silently caps customer confidence at medium without
-      // any obvious error. Reject obviously-malformed values up front.
-      if (androidPackageName !== undefined && androidPackageName !== null) {
-        if (!/^[a-zA-Z][\w]*(\.[a-zA-Z][\w]*)+$/.test(androidPackageName)) {
-          return reply.code(400).send({ error: { code: 'invalid_field', message: 'androidPackageName must be a reverse-DNS Java package name.' } })
-        }
-      }
-      if (androidSigningKeySha256 !== undefined && androidSigningKeySha256 !== null) {
-        const normalized = androidSigningKeySha256.replace(/[:\s]/g, '').toLowerCase()
-        if (!/^[0-9a-f]{64}$/.test(normalized)) {
-          return reply.code(400).send({ error: { code: 'invalid_field', message: 'androidSigningKeySha256 must be 64 hex characters (colons and whitespace are stripped).' } })
-        }
-      }
-      if (iosTeamId !== undefined && iosTeamId !== null) {
-        if (!/^[A-Z0-9]{10}$/.test(iosTeamId)) {
-          return reply.code(400).send({ error: { code: 'invalid_field', message: 'iosTeamId must be 10 uppercase alphanumeric characters.' } })
-        }
-      }
-      if (iosBundleId !== undefined && iosBundleId !== null) {
-        if (!/^[a-zA-Z][\w-]*(\.[a-zA-Z][\w-]*)+$/.test(iosBundleId)) {
-          return reply.code(400).send({ error: { code: 'invalid_field', message: 'iosBundleId must be a reverse-DNS bundle identifier.' } })
-        }
-      }
+      const { orgName, billingEmail, minimumConfidence, networkOptIn } = request.body
 
       const data: Record<string, unknown> = {}
-      if (orgName                 !== undefined) data.orgName                 = orgName
-      if (billingEmail            !== undefined) data.billingEmail            = billingEmail
-      if (minimumConfidence       !== undefined) data.minimumConfidence       = minimumConfidence
-      if (networkOptIn            !== undefined) data.networkOptIn            = networkOptIn
-      if (androidPackageName      !== undefined) data.androidPackageName      = androidPackageName
-      if (androidSigningKeySha256 !== undefined) {
-        data.androidSigningKeySha256 = androidSigningKeySha256 === null
-          ? null
-          : androidSigningKeySha256.replace(/[:\s]/g, '').toLowerCase()
-      }
-      if (iosTeamId               !== undefined) data.iosTeamId               = iosTeamId
-      if (iosBundleId             !== undefined) data.iosBundleId             = iosBundleId
+      if (orgName           !== undefined) data.orgName           = orgName
+      if (billingEmail      !== undefined) data.billingEmail      = billingEmail
+      if (minimumConfidence !== undefined) data.minimumConfidence = minimumConfidence
+      if (networkOptIn      !== undefined) data.networkOptIn      = networkOptIn
 
       if (Object.keys(data).length === 0) {
         return reply.code(400).send({ error: { code: 'no_fields', message: 'No fields to update.' } })
@@ -299,17 +327,13 @@ export default async function customerRoute(fastify: FastifyInstance) {
       })
 
       return reply.send({
-        id:                      customer.id,
-        email:                   customer.email,
-        orgName:                 customer.orgName,
-        billingEmail:            customer.billingEmail,
-        minimumConfidence:       customer.minimumConfidence,
-        networkOptIn:            customer.networkOptIn,
-        androidPackageName:      customer.androidPackageName,
-        androidSigningKeySha256: customer.androidSigningKeySha256,
-        iosTeamId:               customer.iosTeamId,
-        iosBundleId:             customer.iosBundleId,
-        updatedAt:               customer.updatedAt,
+        id:                customer.id,
+        email:             customer.email,
+        orgName:           customer.orgName,
+        billingEmail:      customer.billingEmail,
+        minimumConfidence: customer.minimumConfidence,
+        networkOptIn:      customer.networkOptIn,
+        updatedAt:         customer.updatedAt,
       })
     }
   )

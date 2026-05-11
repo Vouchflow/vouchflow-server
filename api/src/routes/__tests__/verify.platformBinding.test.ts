@@ -19,12 +19,20 @@ const d = HAS_DB ? describe : describe.skip
 // check would still reject any actual forgery, but the contract should
 // surface the type mismatch explicitly.
 
+async function resolveAppId(customerId: string): Promise<string> {
+  const a = await prisma.app.findFirst({ where: { customerId, archivedAt: null }, orderBy: { createdAt: 'asc' } })
+  if (!a) throw new Error(`no app for customer ${customerId}`)
+  return a.id
+}
+
 async function makeMobileDevice(customerId: string) {
   const { publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
   const publicKeyBase64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+  const appId = await resolveAppId(customerId)
   return prisma.device.create({
     data: {
       customerId,
+      appId,
       deviceToken: `dvt_${crypto.randomBytes(8).toString('hex')}`,
       publicKey: publicKeyBase64,
       keyFingerprint: crypto.createHash('sha256').update(publicKeyBase64).digest('hex'),
@@ -39,9 +47,11 @@ async function makeMobileDevice(customerId: string) {
 async function makeWebDevice(customerId: string) {
   const { publicKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'P-256' })
   const publicKeyBase64 = publicKey.export({ type: 'spki', format: 'der' }).toString('base64')
+  const appId = await resolveAppId(customerId)
   return prisma.device.create({
     data: {
       customerId,
+      appId,
       deviceToken: `dvt_${crypto.randomBytes(8).toString('hex')}`,
       publicKey: publicKeyBase64,
       keyFingerprint: crypto.createHash('sha256').update(publicKeyBase64).digest('hex'),

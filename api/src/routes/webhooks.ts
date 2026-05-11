@@ -92,6 +92,7 @@ const route: FastifyPluginAsync = async (fastify) => {
       const endpoint = await prisma.webhookEndpoint.create({
         data: {
           customerId,
+          appId:  request.appId,  // chunk1-compile-fix: every endpoint belongs to an App
           url:    parsed.data.url,
           events: parsed.data.events,
           secretEncrypted,

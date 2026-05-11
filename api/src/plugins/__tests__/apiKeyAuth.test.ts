@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest'
 import { FastifyInstance } from 'fastify'
+import { prisma } from '../../lib/prisma.js'
 import { makeApiKeyAuthPlugin } from '../apiKeyAuth.js'
 import {
   HAS_DB,
@@ -56,7 +57,8 @@ d('apiKeyAuth: write-scoped endpoint', () => {
   // ── Sandbox keys ────────────────────────────────────────────────────────
 
   it('accepts a sandbox write key on a write endpoint', async () => {
-    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    // Apps refactor: sandbox keys belong to an App; apiKeyId is sandbox:<app.id>.
+    const { customer, app, sandboxWriteKey } = await createSandboxCustomer()
     const res = await writeApp.inject({
       method: 'POST',
       url: '/test',
@@ -66,7 +68,7 @@ d('apiKeyAuth: write-scoped endpoint', () => {
     const body = res.json() as { customerId: string; isSandbox: boolean; apiKeyId: string }
     expect(body.customerId).toBe(customer.id)
     expect(body.isSandbox).toBe(true)
-    expect(body.apiKeyId).toBe(`sandbox:${customer.id}`)
+    expect(body.apiKeyId).toBe(`sandbox:${app.id}`)
   })
 
   it('rejects a sandbox READ key on a write endpoint with insufficient_scope', async () => {
@@ -124,6 +126,31 @@ d('apiKeyAuth: write-scoped endpoint', () => {
     })
     expect(res.statusCode).toBe(401)
     expect(res.json()).toMatchObject({ error: { code: 'invalid_api_key' } })
+  })
+
+  it('rejects a sandbox key for an archived app with app_archived', async () => {
+    const { app, sandboxWriteKey } = await createSandboxCustomer()
+    await prisma.app.update({ where: { id: app.id }, data: { archivedAt: new Date() } })
+    const res = await writeApp.inject({
+      method: 'POST',
+      url: '/test',
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
+    })
+    expect(res.statusCode).toBe(401)
+    expect(res.json()).toMatchObject({ error: { code: 'app_archived' } })
+  })
+
+  it('rejects a live key for an archived app with app_archived', async () => {
+    const { customer, app } = await createSandboxCustomer()
+    const { rawKey } = await createLiveKey(customer.id, 'write')
+    await prisma.app.update({ where: { id: app.id }, data: { archivedAt: new Date() } })
+    const res = await writeApp.inject({
+      method: 'POST',
+      url: '/test',
+      headers: { authorization: `Bearer ${rawKey}` },
+    })
+    expect(res.statusCode).toBe(401)
+    expect(res.json()).toMatchObject({ error: { code: 'app_archived' } })
   })
 
   // ── Live keys ──────────────────────────────────────────────────────────

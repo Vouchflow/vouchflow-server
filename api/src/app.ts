@@ -9,6 +9,7 @@ import signRoute from './routes/sign.js'
 import jwksRoute from './routes/jwks.js'
 import deviceRoute from './routes/device.js'
 import customerRoute from './routes/customers.js'
+import appsRoute from './routes/apps.js'
 import statsRoute from './routes/stats.js'
 import webhookRoute from './routes/webhooks.js'
 
@@ -54,6 +55,7 @@ export async function buildApp() {
   await fastify.register(jwksRoute,    { prefix: '/v1' })
   await fastify.register(deviceRoute,  { prefix: '/v1' })
   await fastify.register(customerRoute, { prefix: '/v1' })
+  await fastify.register(appsRoute,     { prefix: '/v1' })
   await fastify.register(statsRoute,    { prefix: '/v1' })
   await fastify.register(webhookRoute,  { prefix: '/v1' })
 

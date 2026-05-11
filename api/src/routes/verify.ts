@@ -12,6 +12,7 @@ import { isDisposableEmailDomain } from '../services/disposableEmail.js'
 import { verifyWebAuthnAssertion, extractRpIdFromClientData } from '../services/webauthn.js'
 import { anomalyQueue } from '../lib/queues.js'
 import { config } from '../config.js'
+import { loadAppPolicy, resolveVerifyMin } from '../services/appConfidencePolicy.js'
 
 // §7 Session expiry: 60 seconds
 const SESSION_EXPIRY_SECONDS = 60
@@ -94,21 +95,36 @@ const route: FastifyPluginAsync = async (fastify) => {
         if (!device) {
           return reply.code(404).send({ error: { code: 'device_not_found', message: 'Device token not found.' } })
         }
-        if (device.customerId !== request.customerId) {
+        // Cross-app isolation: a device enrolled under one app cannot be
+        // verified through a different app's API key, even within the same
+        // customer. We return the same `device_not_owned` code rather than
+        // a new one to avoid leaking the existence of the device to a
+        // sibling app via a unique error path.
+        if (device.customerId !== request.customerId || device.appId !== request.appId) {
           return reply.code(403).send({ error: { code: 'device_not_owned', message: 'Device does not belong to this customer.' } })
         }
         if (device.status !== 'active') {
           return reply.code(409).send({ error: { code: 'device_inactive', message: `Device status is ${device.status}.` } })
         }
 
-        // §7: minimum_confidence check
-        if (body.minimum_confidence) {
+        // §7 + apps refactor: minimum confidence is the max of (SDK request,
+        // App per-context override, App.verifyMinConfidence,
+        // Customer.minimumConfidence). The SDK request is still the floor —
+        // this only ratchets it up, never down.
+        const policy = await loadAppPolicy(request.appId)
+        const appFloor = resolveVerifyMin(policy, body.context)
+        const effectiveMin = body.minimum_confidence
+          ? (CONFIDENCE_RANK[appFloor ?? 'low'] >= CONFIDENCE_RANK[body.minimum_confidence]
+              ? appFloor
+              : body.minimum_confidence)
+          : appFloor
+        if (effectiveMin) {
           const ceiling = device.confidenceCeiling
-          if (!confidenceMeets(ceiling, body.minimum_confidence)) {
+          if (!confidenceMeets(ceiling, effectiveMin)) {
             return reply.code(422).send({
               error: {
                 code: 'verification_impossible',
-                message: `Device cannot meet minimum_confidence: ${body.minimum_confidence}. Ceiling is ${ceiling}.`,
+                message: `Device cannot meet minimum_confidence: ${effectiveMin}. Ceiling is ${ceiling}.`,
               },
             })
           }
@@ -123,6 +139,7 @@ const route: FastifyPluginAsync = async (fastify) => {
             sessionId,
             deviceId: device.id,
             customerId: request.customerId,
+            appId:      request.appId,  // chunk1-compile-fix: every Verification belongs to an App
             challenge,
             state: 'INITIATED',
             context: body.context,
@@ -210,6 +227,7 @@ const route: FastifyPluginAsync = async (fastify) => {
               sessionId: retrySessionId,
               deviceId: device.id,
               customerId: session.customerId,
+              appId:      session.appId,  // chunk1-compile-fix: retry inherits the original session's app
               challenge: retryChallenge,
               state: 'INITIATED',
               context: session.context,
@@ -367,7 +385,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         // ── Dispatch webhook ─────────────────────────────────────────────────
         // §7: device_token intentionally absent from webhook payload
         if (signatureValid) {
-          await dispatchWebhook(session.customerId, {
+          await dispatchWebhook({ customerId: session.customerId, appId: session.appId }, {
             event: 'verification.complete',
             session_id,
             verified: true,
@@ -502,6 +520,7 @@ const route: FastifyPluginAsync = async (fastify) => {
             create: {
               deviceToken: `dvt_failed_${session_id}`,
               customerId: session.customerId,
+              appId:      session.appId,  // chunk1-compile-fix: failed-enrollment placeholder Device
               publicKey: '',
               keyFingerprint: '',
               platform: 'unknown',
@@ -678,7 +697,7 @@ async function handleFallbackComplete(
   })
 
   // Dispatch fallback_complete webhook
-  await dispatchWebhook(session.customerId, {
+  await dispatchWebhook({ customerId: session.customerId, appId: session.appId }, {
     event: 'verification.fallback_complete',
     session_id: sessionId,
     verified: true,

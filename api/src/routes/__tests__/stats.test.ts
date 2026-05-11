@@ -92,23 +92,23 @@ d('GET /v1/customers/:id/stats', () => {
     // doesn't restore the cached token re-enrolls under the *same* attestation
     // public key but a fresh deviceToken — creating a second 'active' row.
     // The dashboard counter should collapse those.
-    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { customer, app: appRow, sandboxWriteKey } = await createSandboxCustomer()
     const sharedFp = 'fp_' + 'a'.repeat(60)
     await prisma.device.create({
       data: {
-        customerId: customer.id, deviceToken: 'dvt_a', publicKey: 'pk_a',
+        customerId: customer.id, appId: appRow.id, deviceToken: 'dvt_a', publicKey: 'pk_a',
         keyFingerprint: sharedFp, platform: 'android', status: 'active', enrolledAt: new Date(),
       },
     })
     await prisma.device.create({
       data: {
-        customerId: customer.id, deviceToken: 'dvt_b', publicKey: 'pk_a',
+        customerId: customer.id, appId: appRow.id, deviceToken: 'dvt_b', publicKey: 'pk_a',
         keyFingerprint: sharedFp, platform: 'android', status: 'active', enrolledAt: new Date(),
       },
     })
     await prisma.device.create({
       data: {
-        customerId: customer.id, deviceToken: 'dvt_c', publicKey: 'pk_b',
+        customerId: customer.id, appId: appRow.id, deviceToken: 'dvt_c', publicKey: 'pk_b',
         keyFingerprint: 'fp_' + 'b'.repeat(60), platform: 'android', status: 'active', enrolledAt: new Date(),
       },
     })
@@ -539,17 +539,17 @@ d('GET /v1/customers/:id/usage', () => {
   })
 
   it('dedupes deviceCount by keyFingerprint', async () => {
-    const { customer, sandboxWriteKey } = await createSandboxCustomer()
+    const { customer, app: appRow, sandboxWriteKey } = await createSandboxCustomer()
     const sharedFp = 'fp_' + 'a'.repeat(60)
     await prisma.device.create({
       data: {
-        customerId: customer.id, deviceToken: 'dvt_x', publicKey: 'pk',
+        customerId: customer.id, appId: appRow.id, deviceToken: 'dvt_x', publicKey: 'pk',
         keyFingerprint: sharedFp, platform: 'android', status: 'active', enrolledAt: new Date(),
       },
     })
     await prisma.device.create({
       data: {
-        customerId: customer.id, deviceToken: 'dvt_y', publicKey: 'pk',
+        customerId: customer.id, appId: appRow.id, deviceToken: 'dvt_y', publicKey: 'pk',
         keyFingerprint: sharedFp, platform: 'android', status: 'active', enrolledAt: new Date(),
       },
     })

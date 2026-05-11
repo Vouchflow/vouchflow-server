@@ -14,6 +14,7 @@ export type ApiScope = 'write' | 'read'
 declare module 'fastify' {
   interface FastifyRequest {
     customerId: string
+    appId: string
     apiKeyId: string
     apiKeyDeprecated: boolean
     isSandbox: boolean
@@ -55,8 +56,9 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
         return reply.code(401).send({ error: { code: 'missing_api_key', message: 'Authorization header required.' } })
       }
 
-      // §13: Sandbox keys are stored as plaintext on Customer; live keys are SHA-256 hashed in ApiKey.
-      // Sandbox write keys: vsk_sandbox_  (not vsk_sandbox_read_)
+      // Apps refactor: sandbox keys live on App (plaintext); live keys are
+      // SHA-256 hashed rows in ApiKey with appId set.
+      // Sandbox write keys: vsk_sandbox_       (not vsk_sandbox_read_)
       // Sandbox read keys:  vsk_sandbox_read_
       if (rawKey.startsWith('vsk_sandbox_')) {
         const isSandboxRead = rawKey.startsWith('vsk_sandbox_read_')
@@ -66,26 +68,30 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
           return reply.code(403).send({ error: { code: 'insufficient_scope', message: `This endpoint requires a ${requiredScope}-scoped API key.` } })
         }
 
-        const customer = isSandboxRead
-          ? await prisma.customer.findUnique({ where: { sandboxReadKey: rawKey } })
-          : await prisma.customer.findUnique({ where: { sandboxWriteKey: rawKey } })
+        const app = isSandboxRead
+          ? await prisma.app.findUnique({ where: { sandboxReadKey: rawKey } })
+          : await prisma.app.findUnique({ where: { sandboxWriteKey: rawKey } })
 
-        if (!customer) {
+        if (!app) {
           return reply.code(401).send({ error: { code: 'invalid_api_key', message: 'Invalid API key.' } })
         }
+        if (app.archivedAt) {
+          return reply.code(401).send({ error: { code: 'app_archived', message: 'This app has been archived.' } })
+        }
 
-        request.customerId = customer.id
-        request.apiKeyId = `sandbox:${customer.id}`
+        request.customerId = app.customerId
+        request.appId = app.id
+        request.apiKeyId = `sandbox:${app.id}`
         request.apiKeyDeprecated = false
         request.isSandbox = true
         return
       }
 
-      // Live key path — SHA-256 hashed
+      // Live key path — SHA-256 hashed, scoped to an App via apiKey.appId.
       const keyHash = hashApiKey(rawKey)
       const apiKey = await prisma.apiKey.findUnique({
         where: { keyHash },
-        include: { customer: true },
+        include: { customer: true, app: true },
       })
 
       if (!apiKey) {
@@ -96,6 +102,10 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
         return reply.code(401).send({ error: { code: 'api_key_expired', message: 'API key has expired after rotation window.' } })
       }
 
+      if (apiKey.app.archivedAt) {
+        return reply.code(401).send({ error: { code: 'app_archived', message: 'This app has been archived.' } })
+      }
+
       if (!scopeSatisfies(apiKey.scope as ApiScope, requiredScope)) {
         return reply.code(403).send({ error: { code: 'insufficient_scope', message: `This endpoint requires a ${requiredScope}-scoped API key.` } })
       }
@@ -104,6 +114,7 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
       prisma.apiKey.update({ where: { id: apiKey.id }, data: { lastUsedAt: new Date() } }).catch(() => {})
 
       request.customerId = apiKey.customerId
+      request.appId = apiKey.appId
       request.apiKeyId = apiKey.id
       request.apiKeyDeprecated = apiKey.deprecated
       request.isSandbox = false

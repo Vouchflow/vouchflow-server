@@ -322,12 +322,14 @@ d('dispatchWebhook events filter', () => {
   }
 
   it('only enqueues deliveries for endpoints subscribed to the event', async () => {
-    const { customer } = await createSandboxCustomer()
+    // chunk1: WebhookEndpoint rows need appId after the apps refactor.
+    const { customer, app } = await createSandboxCustomer()
 
     // Endpoint A: subscribed to BOTH events → should receive
     const a = await prisma.webhookEndpoint.create({
       data: {
         customerId:      customer.id,
+        appId:           app.id,
         url:             'https://a.example/h',
         events:          ['verification.complete', 'verification.fallback_complete'],
         secretEncrypted: Buffer.from(''),
@@ -337,6 +339,7 @@ d('dispatchWebhook events filter', () => {
     const b = await prisma.webhookEndpoint.create({
       data: {
         customerId:      customer.id,
+        appId:           app.id,
         url:             'https://b.example/h',
         events:          ['verification.fallback_complete'],
         secretEncrypted: Buffer.from(''),
@@ -346,6 +349,7 @@ d('dispatchWebhook events filter', () => {
     const c = await prisma.webhookEndpoint.create({
       data: {
         customerId:      customer.id,
+        appId:           app.id,
         url:             'https://c.example/h',
         events:          [],
         secretEncrypted: Buffer.from(''),
@@ -364,11 +368,12 @@ d('dispatchWebhook events filter', () => {
 
   it('does not deliver across customers', async () => {
     const { customer: customerA } = await createSandboxCustomer()
-    const { customer: customerB } = await createSandboxCustomer()
+    const { customer: customerB, app: appB } = await createSandboxCustomer()
 
     await prisma.webhookEndpoint.create({
       data: {
         customerId:      customerB.id,
+        appId:           appB.id,
         url:             'https://b.example/h',
         events:          ['verification.complete'],
         secretEncrypted: Buffer.from(''),

@@ -173,13 +173,17 @@ const route: FastifyPluginAsync = async (fastify) => {
       if (!request.isSandbox && body.attestation) {
         if (body.platform !== 'web') {
           // ── iOS / Android attestation path ────────────────────────────────
+          // chunk1-compile-fix: attestation params moved from Customer to App.
+          // Chunk 3 reshapes this lookup but the simple App.findUnique by id
+          // keeps the behaviour identical.
           try {
-            const customer = await prisma.customer.findUnique({
-              where: { id: request.customerId },
+            const app = await prisma.app.findUnique({
+              where: { id: request.appId },
               select: {
                 iosTeamId: true,
                 iosBundleId: true,
                 androidPackageName: true,
+                androidSigningKeySha256: true,
               },
             })
             const result = await validateAttestation(
@@ -190,7 +194,7 @@ const route: FastifyPluginAsync = async (fastify) => {
                 certChain: body.attestation.cert_chain ?? null,
                 nonce: body.idempotency_key,
               },
-              buildAttestationConfig(customer),
+              buildAttestationConfig(app),
             )
             attestationVerified = result.verified
           } catch {
@@ -226,6 +230,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         create: {
           deviceToken,
           customerId: request.customerId,
+          appId:      request.appId,  // chunk1-compile-fix: every Device belongs to an App
           publicKey: effectivePublicKey,
           keyFingerprint,
           platform,

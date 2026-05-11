@@ -12,6 +12,7 @@ import {
 } from '../services/webauthn.js'
 import { signAssertion } from '../services/signingKeys.js'
 import { config } from '../config.js'
+import { loadAppPolicy, resolveSignMin } from '../services/appConfidencePolicy.js'
 
 // Sessions for /v1/sign expire after 60 seconds — same as verify.
 const SESSION_EXPIRY_SECONDS = 60
@@ -93,7 +94,11 @@ const route: FastifyPluginAsync = async (fastify) => {
           .code(404)
           .send({ error: { code: 'device_not_found', message: 'Device token not found.' } })
       }
-      if (device.customerId !== request.customerId) {
+      // Apps refactor: cross-app isolation. A device enrolled under one app
+      // cannot be signed through a different app's API key, even within the
+      // same customer. Same `device_not_owned` code as cross-customer to
+      // avoid leaking existence of the device to a sibling app.
+      if (device.customerId !== request.customerId || device.appId !== request.appId) {
         return reply
           .code(403)
           .send({ error: { code: 'device_not_owned', message: 'Device does not belong to this customer.' } })
@@ -113,7 +118,16 @@ const route: FastifyPluginAsync = async (fastify) => {
         })
       }
 
-      const minConfidence = body.minimum_confidence ?? 'high'
+      // Apps refactor: minimum confidence is the max of (SDK request,
+      // App per-context override, App.signPayloadMinConfidence). When the
+      // SDK omits minimum_confidence the App policy is the only floor — we
+      // do NOT pre-default to 'high', otherwise an explicit per-app
+      // signPayloadMinConfidence='low' couldn't take effect.
+      const policy = await loadAppPolicy(request.appId)
+      const appFloor = resolveSignMin(policy, body.context)
+      const minConfidence = body.minimum_confidence
+        ? (CONFIDENCE_RANK[appFloor] >= CONFIDENCE_RANK[body.minimum_confidence] ? appFloor : body.minimum_confidence)
+        : appFloor
       if (!meets(device.confidenceCeiling, minConfidence)) {
         return reply.code(422).send({
           error: {
@@ -136,6 +150,7 @@ const route: FastifyPluginAsync = async (fastify) => {
           sessionId,
           deviceId: device.id,
           customerId: request.customerId,
+          appId:      request.appId,  // chunk1-compile-fix: every sign Verification belongs to an App
           challenge,
           state: 'INITIATED',
           type: 'sign',
@@ -424,7 +439,7 @@ const route: FastifyPluginAsync = async (fastify) => {
       const assertion = await signAssertion(jwsPayload)
 
       // Webhook (mirrors verify.complete dispatch)
-      await dispatchWebhook(session.customerId, {
+      await dispatchWebhook({ customerId: session.customerId, appId: session.appId }, {
         event: 'sign.complete',
         session_id,
         verified: true,
