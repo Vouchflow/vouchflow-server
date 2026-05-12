@@ -658,6 +658,136 @@ export default async function appsRoute(fastify: FastifyInstance) {
     }
   )
 
+  // POST /v1/customers/:id/apps/:appId/live-keys/rotate — rotate a live key
+  // Creates a new key with the given scope and marks the previous active key
+  // as deprecated (still valid for 14 days). If rotating a 'pair' key, it
+  // auto-splits into separate write+read keys.
+  fastify.post<{
+    Params: { id: string; appId: string }
+    Body: { scope: 'write' | 'read' }
+  }>(
+    '/customers/:id/apps/:appId/live-keys/rotate',
+    async (request, reply) => {
+      if (!verifyAdminKey(request.headers.authorization)) {
+        return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
+      }
+      const { id: customerId, appId } = request.params
+      const { scope } = request.body
+      if (!scope || (scope !== 'write' && scope !== 'read')) {
+        return reply.code(400).send({ error: { code: 'invalid_scope', message: 'scope must be "write" or "read".' } })
+      }
+      const app = await prisma.app.findFirst({ where: { id: appId, customerId } })
+      if (!app) {
+        return reply.code(404).send({ error: { code: 'not_found', message: 'App not found.' } })
+      }
+
+      // Find the current active key for this scope (or 'pair' if it exists)
+      const existing = await prisma.apiKey.findFirst({
+        where: {
+          appId,
+          deprecated: false,
+          OR: [{ scope }, { scope: 'pair' }],
+        },
+        orderBy: { createdAt: 'desc' },
+      })
+
+      // Generate new key
+      const newKey = generateLiveKey(scope)
+      const created = await prisma.apiKey.create({
+        data: {
+          appId,
+          customerId,
+          scope,
+          keyHash: newKey.hash,
+          environment: 'production',
+        },
+        select: { id: true, scope: true, createdAt: true },
+      })
+
+      // Deprecate the old key if it exists
+      let deprecated = null
+      if (existing) {
+        deprecated = await prisma.apiKey.update({
+          where: { id: existing.id },
+          data: { deprecated: true, deprecatedAt: new Date() },
+          select: { id: true, scope: true, deprecatedAt: true },
+        })
+      }
+
+      // If the old key was a 'pair' and we're rotating to split it, also
+      // generate the companion key (e.g., rotating write from pair creates read too)
+      let companion = null
+      if (existing?.scope === 'pair') {
+        const companionScope: 'write' | 'read' = scope === 'write' ? 'read' : 'write'
+        const companionKey = generateLiveKey(companionScope)
+        const companionCreated = await prisma.apiKey.create({
+          data: {
+            appId,
+            customerId,
+            scope: companionScope,
+            keyHash: companionKey.hash,
+            environment: 'production',
+          },
+          select: { id: true, scope: true, createdAt: true },
+        })
+        companion = {
+          id: companionCreated.id,
+          rawKey: companionKey.rawKey,
+          scope: companionScope,
+          createdAt: companionCreated.createdAt,
+        }
+      }
+
+      return reply.send({
+        key: { id: created.id, rawKey: newKey.rawKey, scope: created.scope, createdAt: created.createdAt },
+        deprecated: deprecated || undefined,
+        companion: companion || undefined,
+      })
+    }
+  )
+
+  // POST /v1/customers/:id/apps/:appId/live-keys/generate — generate initial live keys
+  // Creates the canonical write+read pair for apps that don't have them yet.
+  fastify.post<{ Params: { id: string; appId: string } }>(
+    '/customers/:id/apps/:appId/live-keys/generate',
+    async (request, reply) => {
+      if (!verifyAdminKey(request.headers.authorization)) {
+        return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
+      }
+      const { id: customerId, appId } = request.params
+      const app = await prisma.app.findFirst({ where: { id: appId, customerId } })
+      if (!app) {
+        return reply.code(404).send({ error: { code: 'not_found', message: 'App not found.' } })
+      }
+
+      // Check if live keys already exist
+      const existing = await prisma.apiKey.findFirst({
+        where: { appId, environment: 'production', deprecated: false },
+      })
+      if (existing) {
+        return reply.code(409).send({
+          error: { code: 'keys_exist', message: 'Active live keys already exist. Use rotate to refresh.' },
+        })
+      }
+
+      // Generate write + read pair
+      const writeKey = generateLiveKey('write')
+      const readKey = generateLiveKey('read')
+
+      await prisma.apiKey.createMany({
+        data: [
+          { appId, customerId, scope: 'write', keyHash: writeKey.hash, environment: 'production' },
+          { appId, customerId, scope: 'read', keyHash: readKey.hash, environment: 'production' },
+        ],
+      })
+
+      return reply.code(201).send({
+        liveWriteKey: writeKey.rawKey,
+        liveReadKey: readKey.rawKey,
+      })
+    }
+  )
+
   // ── Per-app webhooks (admin-keyed) ────────────────────────────────────
   // The dashboard manages webhooks per-app from the apps-detail page.
   // The /v1/webhooks family in webhooks.ts is API-key-auth scoped to the
