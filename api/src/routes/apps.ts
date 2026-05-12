@@ -20,10 +20,22 @@ const ALLOWED_WEBHOOK_EVENTS = new Set([
 // is intentionally NOT reserved — the migration creates one with that slug.
 const RESERVED_SLUGS = new Set(['new', 'archived'])
 
-// Hard cap on simultaneously-active live keys per app. Same value the
-// previous customer-scoped cap used; with multi-app this scales naturally
-// (a customer with 5 apps gets 50 live keys total).
-const MAX_ACTIVE_KEYS_PER_APP = 10
+// Hard cap on simultaneously-active live keys per app. Bumped from 10 to
+// 20 in the at-most-one-canonical-key refactor: with rotation each scope
+// can have its prior key in the 14-day grace window, so transient counts
+// can exceed 2. 20 leaves slack for unusual rotation patterns.
+const MAX_ACTIVE_KEYS_PER_APP = 20
+
+// ── live-key helpers (shared between create-app, generate, rotate) ──────
+
+const hashKey = (k: string) => crypto.createHash('sha256').update(k).digest('hex')
+
+function generateLiveKey(scope: 'write' | 'read'): { rawKey: string; hash: string } {
+  const raw = scope === 'write'
+    ? `vsk_live_${crypto.randomBytes(20).toString('hex')}`
+    : `vsk_live_read_${crypto.randomBytes(20).toString('hex')}`
+  return { rawKey: raw, hash: hashKey(raw) }
+}
 
 const CONFIDENCE_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 }
 const CONFIDENCE_VALUES = new Set(['low', 'medium', 'high'])
@@ -254,6 +266,14 @@ export default async function appsRoute(fastify: FastifyInstance) {
       const sandboxWriteKey = `vsk_sandbox_${crypto.randomBytes(20).toString('hex')}`
       const sandboxReadKey  = `vsk_sandbox_read_${crypto.randomBytes(20).toString('hex')}`
 
+      // Auto-generate the canonical live write + read keys at app creation.
+      // Each app has at-most-one active live key per scope; rotation creates
+      // a new one and demotes the old to the 14-day grace window.
+      // Nested writes are atomic and sidestep the FK-visibility quirk that
+      // bit us with sequential prisma.$transaction(tx => ...) statements.
+      const liveWrite = generateLiveKey('write')
+      const liveRead  = generateLiveKey('read')
+
       const app = await prisma.app.create({
         data: {
           customerId,
@@ -263,6 +283,12 @@ export default async function appsRoute(fastify: FastifyInstance) {
           sandboxWriteKey,
           sandboxReadKey,
           signPayloadMinConfidence: 'high',
+          apiKeys: {
+            create: [
+              { customerId, keyHash: liveWrite.hash, scope: 'write' },
+              { customerId, keyHash: liveRead.hash,  scope: 'read'  },
+            ],
+          },
         },
       })
 
@@ -270,6 +296,8 @@ export default async function appsRoute(fastify: FastifyInstance) {
         app: appDetail(app, true),
         sandboxWriteKey,
         sandboxReadKey,
+        liveWriteKey: liveWrite.rawKey,
+        liveReadKey:  liveRead.rawKey,
       })
     }
   )
@@ -527,10 +555,15 @@ export default async function appsRoute(fastify: FastifyInstance) {
       if (!app) {
         return reply.code(404).send({ error: { code: 'not_found', message: 'App not found.' } })
       }
+      // Returns ALL keys (active + deprecated-in-grace + expired). The
+      // dashboard renders active prominently and groups deprecated keys
+      // under a "Recently rotated" section showing their grace expiry.
+      // Auth-time validation in apiKeyAuth.ts decides whether deprecated
+      // keys are still accepted (14-day grace from deprecatedAt).
       const keys = await prisma.apiKey.findMany({
-        where: { appId, deprecated: false },
-        select: { id: true, scope: true, createdAt: true, lastUsedAt: true },
-        orderBy: { createdAt: 'desc' },
+        where: { appId },
+        select: { id: true, scope: true, createdAt: true, lastUsedAt: true, deprecated: true, deprecatedAt: true },
+        orderBy: [{ deprecated: 'asc' }, { createdAt: 'desc' }],
       })
       return reply.send({ keys })
     }
