@@ -81,9 +81,10 @@ const route: FastifyPluginAsync = async (fastify) => {
       const body = parsed.data
 
       // Idempotency replay (Redis-first, DB fallback) — return the cached
-      // {session_id, challenge} pair if seen within 24h.
+      // {session_id, challenge} pair if seen within 24h. Key on both
+      // idempotency_key AND device_token to prevent cross-device collisions.
       if (body.idempotency_key) {
-        const cacheKey = `sign_idem:${request.customerId}:${body.idempotency_key}`
+        const cacheKey = `sign_idem:${request.customerId}:${body.device_token}:${body.idempotency_key}`
         const cached = await redis.get(cacheKey).catch(() => null)
         if (cached) return reply.code(200).send(JSON.parse(cached))
       }
@@ -170,7 +171,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         payload_sha256: payloadSha256,
       }
       if (body.idempotency_key) {
-        const cacheKey = `sign_idem:${request.customerId}:${body.idempotency_key}`
+        const cacheKey = `sign_idem:${request.customerId}:${body.device_token}:${body.idempotency_key}`
         await redis
           .set(cacheKey, JSON.stringify(response), 'EX', SIGN_IDEMPOTENCY_TTL_SECONDS)
           .catch(() => undefined)
