@@ -61,7 +61,7 @@ async function decryptPrivateJwk(encrypted: Buffer): Promise<string> {
  */
 async function generateSigningKey(): Promise<{ kid: string; privateKey: KeyLike }> {
   // Generate Ed25519 key pair via Node.js crypto
-  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')
+  const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519') as { publicKey: KeyLike; privateKey: KeyLike }
 
   // Export as JWK
   const publicJwk = await exportJWK(publicKey)
@@ -128,7 +128,7 @@ async function generateSigningKey(): Promise<{ kid: string; privateKey: KeyLike 
  * repeated pgp_sym_decrypt calls on the hot path.
  */
 export async function getActiveSigningKey(): Promise<{ kid: string; privateKey: KeyLike }> {
-  if (cachedSigner) return cachedSigner
+  if (cachedSigner !== null) return cachedSigner
 
   // Look for an active key in DB
   const row: { kid: string; publicKey: string; privateJwkEncrypted: Buffer }[] = await prisma.$queryRaw`
@@ -150,7 +150,7 @@ export async function getActiveSigningKey(): Promise<{ kid: string; privateKey: 
   const privateJwk = JSON.parse(privateJwkJson)
 
   // Import with jose — returns CryptoKey which SignJWT accepts directly
-  const privateKey = await importJWK(privateJwk, 'EdDSA')
+  const privateKey = (await importJWK(privateJwk, 'EdDSA')) as KeyLike
 
   cachedSigner = { kid: row[0].kid, privateKey }
   return cachedSigner
