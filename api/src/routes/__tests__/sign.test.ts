@@ -434,7 +434,9 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
     expect(res.json().error.code).toBe('invalid_signature')
   })
 
-  it('rejects double-completion with challenge_already_consumed', async () => {
+  it('double-completion returns cached response (idempotent, Issue #2)', async () => {
+    // After the idempotency fix, calling /complete twice on the same session
+    // returns the original response (200) instead of failing with 409.
     const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const { deviceToken, assertionFor } = await makeWebDevice(customer.id)
     const payload = '{}'
@@ -455,14 +457,22 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
       payload: { device_token: deviceToken, ...assertion },
     })
     expect(first.statusCode).toBe(200)
+    const firstBody = first.json() as any
+    expect(firstBody.verified).toBe(true)
+    expect(firstBody.assertion).toBeTruthy()
 
+    // Second completion should return the same response (idempotent)
     const second = await app.inject({
       method: 'POST',
       url: `/v1/sign/${session_id}/complete`,
       headers: { authorization: `Bearer ${sandboxWriteKey}` },
       payload: { device_token: deviceToken, ...assertion },
     })
-    expect([409, 422]).toContain(second.statusCode)  // either consumed or invalid_session_state
+    expect(second.statusCode).toBe(200)  // idempotent - returns cached response
+    const secondBody = second.json() as any
+    expect(secondBody.verified).toBe(true)
+    expect(secondBody.assertion).toBe(firstBody.assertion)  // same assertion
+    expect(secondBody.signing_device_id).toBe(firstBody.signing_device_id)
   })
 
   it('idempotency_key replay returns the same session_id', async () => {
