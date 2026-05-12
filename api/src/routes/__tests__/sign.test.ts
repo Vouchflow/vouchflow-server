@@ -299,7 +299,7 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
   beforeAll(async () => {
     app = await buildTestApp(async (fastify) => {
       await fastify.register(signRoute, { prefix: '/v1' })
-      await fastify.register(jwksRoute, { prefix: '/v1' })
+      await fastify.register(jwksRoute)  // No prefix for /.well-known/jwks.json
     })
   })
   afterAll(async () => app.close())
@@ -351,7 +351,7 @@ d('POST /v1/sign/:session_id/complete — happy path', () => {
     expect(body.assertion.split('.').length).toBe(3)  // JWS compact
 
     // Verify JWS against JWKS
-    const jwks = await app.inject({ method: 'GET', url: '/v1/.well-known/jwks.json' })
+    const jwks = await app.inject({ method: 'GET', url: '/.well-known/jwks.json' })
     expect(jwks.statusCode).toBe(200)
     const { keys } = jwks.json() as { keys: any[] }
     expect(keys.length).toBeGreaterThan(0)
@@ -528,7 +528,7 @@ d('POST /v1/sign/:session_id/complete — mobile', () => {
   beforeAll(async () => {
     app = await buildTestApp(async (fastify) => {
       await fastify.register(signRoute, { prefix: '/v1' })
-      await fastify.register(jwksRoute, { prefix: '/v1' })
+      await fastify.register(jwksRoute)  // No prefix for /.well-known/jwks.json
     })
   })
   afterAll(async () => app.close())
@@ -777,12 +777,12 @@ function pushByteString(buf: number[], bytes: Buffer): void {
   for (const b of bytes) buf.push(b)
 }
 
-d('GET /v1/.well-known/jwks.json', () => {
+d('GET /.well-known/jwks.json', () => {
   let app: FastifyInstance
 
   beforeAll(async () => {
     app = await buildTestApp(async (fastify) => {
-      await fastify.register(jwksRoute, { prefix: '/v1' })
+      await fastify.register(jwksRoute)  // No prefix for /.well-known/jwks.json
     })
   })
   beforeEach(async () => {
@@ -793,7 +793,7 @@ d('GET /v1/.well-known/jwks.json', () => {
   afterAll(async () => app.close())
 
   it('returns JWKS shape', async () => {
-    const res = await app.inject({ method: 'GET', url: '/v1/.well-known/jwks.json' })
+    const res = await app.inject({ method: 'GET', url: '/.well-known/jwks.json' })
     expect(res.statusCode).toBe(200)
     expect(res.headers['cache-control']).toContain('max-age=3600')
     const body = res.json() as { keys: Array<{ kty: string; kid: string; use: string; alg: string }> }

@@ -52,7 +52,7 @@ export async function buildApp() {
   await fastify.register(enrollRoute,  { prefix: '/v1' })
   await fastify.register(verifyRoute,  { prefix: '/v1' })
   await fastify.register(signRoute,    { prefix: '/v1' })
-  await fastify.register(jwksRoute,    { prefix: '/v1' })
+  await fastify.register(jwksRoute)    // No prefix — /.well-known/jwks.json is a standard location
   await fastify.register(deviceRoute,  { prefix: '/v1' })
   await fastify.register(customerRoute, { prefix: '/v1' })
   await fastify.register(appsRoute,     { prefix: '/v1' })
