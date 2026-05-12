@@ -213,7 +213,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     })
 
     const assertion = assertionFor({
-      canonicalizedPayload: initBody.canonicalized_payload,
+      canonicalizedPayload,
       challengeBase64: initBody.challenge,
     })
     const completeRes = await app.inject({
