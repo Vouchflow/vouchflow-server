@@ -715,7 +715,7 @@ export default async function appsRoute(fastify: FastifyInstance) {
 
       return reply.send({
         key: { id: created.id, rawKey: newKey.rawKey, scope: created.scope, createdAt: created.createdAt },
-        deprecated: deprecated || undefined,
+        deprecated: deprecated ?? null,
       })
     }
   )

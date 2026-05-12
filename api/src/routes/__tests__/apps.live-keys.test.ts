@@ -79,9 +79,9 @@ d('apps live-keys', () => {
 
   it('21st key → 409 key_limit_reached (cap is 20)', async () => {
     const { customer, app: a } = await createSandboxCustomer()
-    // App auto-created with 2 keys (write + read). Create 9 more pairs = 18 more keys.
-    // Total = 20 keys. Then try to add one more → should hit limit.
-    for (let i = 0; i < 9; i++) {
+    // createSandboxCustomer doesn't create live keys (only sandbox keys).
+    // Create 10 pairs = 20 keys to hit the limit.
+    for (let i = 0; i < 10; i++) {
       const r = await app.inject({
         method: 'POST', url: `/v1/customers/${customer.id}/apps/${a.id}/live-keys`,
         headers: { authorization: `Bearer ${ADMIN_KEY}` },
@@ -89,6 +89,7 @@ d('apps live-keys', () => {
       })
       expect(r.statusCode).toBe(200)
     }
+    // Now try to add one more → should fail with limit error
     const res = await app.inject({
       method: 'POST', url: `/v1/customers/${customer.id}/apps/${a.id}/live-keys`,
       headers: { authorization: `Bearer ${ADMIN_KEY}` },
@@ -195,16 +196,18 @@ d('apps live-keys', () => {
       payload: { name: 'B' },
     })
     const appBId = (r2.json() as any).app.id
+    // Create additional keys on app A
     await app.inject({
       method: 'POST', url: `/v1/customers/${customer.id}/apps/${appA.id}/live-keys`,
       headers: { authorization: `Bearer ${ADMIN_KEY}` },
       payload: {},
     })
+    // App B should only see its own auto-created keys (2), not app A's keys
     const list = await app.inject({
       method: 'GET', url: `/v1/customers/${customer.id}/apps/${appBId}/live-keys`,
       headers: { authorization: `Bearer ${ADMIN_KEY}` },
     })
-    expect((list.json() as any).keys).toHaveLength(0)
+    expect((list.json() as any).keys).toHaveLength(2) // app B's auto-created write + read
   })
 
   it('401 without admin key', async () => {
