@@ -681,12 +681,12 @@ export default async function appsRoute(fastify: FastifyInstance) {
         return reply.code(404).send({ error: { code: 'not_found', message: 'App not found.' } })
       }
 
-      // Find the current active key for this scope (or 'pair' if it exists)
+      // Find the current active key for this scope
       const existing = await prisma.apiKey.findFirst({
         where: {
           appId,
+          scope,
           deprecated: false,
-          OR: [{ scope }, { scope: 'pair' }],
         },
         orderBy: { createdAt: 'desc' },
       })
@@ -699,7 +699,6 @@ export default async function appsRoute(fastify: FastifyInstance) {
           customerId,
           scope,
           keyHash: newKey.hash,
-          environment: 'production',
         },
         select: { id: true, scope: true, createdAt: true },
       })
@@ -714,34 +713,9 @@ export default async function appsRoute(fastify: FastifyInstance) {
         })
       }
 
-      // If the old key was a 'pair' and we're rotating to split it, also
-      // generate the companion key (e.g., rotating write from pair creates read too)
-      let companion = null
-      if (existing?.scope === 'pair') {
-        const companionScope: 'write' | 'read' = scope === 'write' ? 'read' : 'write'
-        const companionKey = generateLiveKey(companionScope)
-        const companionCreated = await prisma.apiKey.create({
-          data: {
-            appId,
-            customerId,
-            scope: companionScope,
-            keyHash: companionKey.hash,
-            environment: 'production',
-          },
-          select: { id: true, scope: true, createdAt: true },
-        })
-        companion = {
-          id: companionCreated.id,
-          rawKey: companionKey.rawKey,
-          scope: companionScope,
-          createdAt: companionCreated.createdAt,
-        }
-      }
-
       return reply.send({
         key: { id: created.id, rawKey: newKey.rawKey, scope: created.scope, createdAt: created.createdAt },
         deprecated: deprecated || undefined,
-        companion: companion || undefined,
       })
     }
   )
@@ -762,7 +736,7 @@ export default async function appsRoute(fastify: FastifyInstance) {
 
       // Check if live keys already exist
       const existing = await prisma.apiKey.findFirst({
-        where: { appId, environment: 'production', deprecated: false },
+        where: { appId, deprecated: false },
       })
       if (existing) {
         return reply.code(409).send({
@@ -776,8 +750,8 @@ export default async function appsRoute(fastify: FastifyInstance) {
 
       await prisma.apiKey.createMany({
         data: [
-          { appId, customerId, scope: 'write', keyHash: writeKey.hash, environment: 'production' },
-          { appId, customerId, scope: 'read', keyHash: readKey.hash, environment: 'production' },
+          { appId, customerId, scope: 'write', keyHash: writeKey.hash },
+          { appId, customerId, scope: 'read', keyHash: readKey.hash },
         ],
       })
 
