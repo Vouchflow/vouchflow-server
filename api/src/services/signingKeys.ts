@@ -24,7 +24,7 @@ import { prisma } from '../lib/prisma.js'
 // If no active key exists, one is generated. This cache avoids DB round-trips
 // and decryption overhead on every /v1/sign/complete call.
 
-let cachedSigner: { kid: string; privateKey: crypto.KeyObject } | null = null
+let cachedSigner: { kid: string; privateKey: crypto.KeyLike } | null = null
 
 // ── Encryption helpers (same pattern as webhookSecrets.ts) ────────────────────
 
@@ -59,7 +59,7 @@ async function decryptPrivateJwk(encrypted: Buffer): Promise<string> {
  * the signer. The private JWK is encrypted at rest; the public JWK is stored
  * in plaintext for JWKS serving.
  */
-async function generateSigningKey(): Promise<{ kid: string; privateKey: crypto.KeyObject }> {
+async function generateSigningKey(): Promise<{ kid: string; privateKey: crypto.KeyLike }> {
   // Generate Ed25519 key pair via Node.js crypto
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')
 
@@ -127,7 +127,7 @@ async function generateSigningKey(): Promise<{ kid: string; privateKey: crypto.K
  * The private key is cached in memory after first decryption to avoid
  * repeated pgp_sym_decrypt calls on the hot path.
  */
-export async function getActiveSigningKey(): Promise<{ kid: string; privateKey: crypto.KeyObject }> {
+export async function getActiveSigningKey(): Promise<{ kid: string; privateKey: crypto.KeyLike }> {
   if (cachedSigner) return cachedSigner
 
   // Look for an active key in DB
@@ -149,9 +149,8 @@ export async function getActiveSigningKey(): Promise<{ kid: string; privateKey: 
   const privateJwkJson = await decryptPrivateJwk(row[0].privateJwkEncrypted)
   const privateJwk = JSON.parse(privateJwkJson)
 
-  // Import with jose, then convert to KeyObject for Node.js crypto
-  const joseKey = await importJWK(privateJwk, 'EdDSA')
-  const privateKey = crypto.createPrivateKey(joseKey as any)
+  // Import with jose — returns CryptoKey which SignJWT accepts directly
+  const privateKey = await importJWK(privateJwk, 'EdDSA')
 
   cachedSigner = { kid: row[0].kid, privateKey }
   return cachedSigner
@@ -167,15 +166,13 @@ export async function getActiveSigningKey(): Promise<{ kid: string; privateKey: 
 export async function signAssertion(payload: Record<string, unknown>): Promise<string> {
   const { kid, privateKey } = await getActiveSigningKey()
 
-  // jose SignJWT accepts CryptoKey or KeyObject; convert KeyObject → CryptoKey
-  // In Node 20+ we can use CryptoKey directly, but KeyObject also works with jose
+  // SignJWT accepts both KeyObject (from generateKeyPairSync) and CryptoKey (from importJWK)
   const signJwt = new SignJWT(payload as any)
     .setProtectedHeader({ alg: 'EdDSA', kid })
     .setIssuedAt()
     .setExpirationTime('60s')
 
-  // jose needs a KeyObject or CryptoKey; Node's crypto.KeyObject works
-  const jws = await signJwt.sign(privateKey as any)
+  const jws = await signJwt.sign(privateKey)
   return jws
 }
 
