@@ -77,10 +77,11 @@ d('apps live-keys', () => {
     expect(res.statusCode).toBe(400)
   })
 
-  it('11th key → 409 key_limit_reached (cap is 10)', async () => {
+  it('21st key → 409 key_limit_reached (cap is 20)', async () => {
     const { customer, app: a } = await createSandboxCustomer()
-    // Five pairs = 10 keys.
-    for (let i = 0; i < 5; i++) {
+    // App auto-created with 2 keys (write + read). Create 9 more pairs = 18 more keys.
+    // Total = 20 keys. Then try to add one more → should hit limit.
+    for (let i = 0; i < 9; i++) {
       const r = await app.inject({
         method: 'POST', url: `/v1/customers/${customer.id}/apps/${a.id}/live-keys`,
         headers: { authorization: `Bearer ${ADMIN_KEY}` },
@@ -119,7 +120,7 @@ d('apps live-keys', () => {
     expect((res.json() as any).error.code).toBe('app_archived')
   })
 
-  it('GET excludes deprecated keys', async () => {
+  it('GET includes deprecated keys (for 14-day grace display)', async () => {
     const { customer, app: a } = await createSandboxCustomer()
     const create = await app.inject({
       method: 'POST', url: `/v1/customers/${customer.id}/apps/${a.id}/live-keys`,
@@ -136,8 +137,11 @@ d('apps live-keys', () => {
       headers: { authorization: `Bearer ${ADMIN_KEY}` },
     })
     const keys = (list.json() as any).keys
-    expect(keys.find((k: any) => k.id === writeKeyId)).toBeUndefined()
-    expect(keys).toHaveLength(1) // only readKey remains
+    const deprecatedKey = keys.find((k: any) => k.id === writeKeyId)
+    expect(deprecatedKey).toBeDefined()
+    expect(deprecatedKey.deprecated).toBe(true)
+    expect(deprecatedKey.deprecatedAt).toBeTruthy()
+    expect(keys).toHaveLength(2) // 1 active readKey + 1 deprecated writeKey
   })
 
   it('DELETE marks deprecated and returns deprecatedAt; second DELETE → 409', async () => {
