@@ -20,7 +20,6 @@ const d = HAS_DB ? describe : describe.skip
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
-const ADMIN_KEY = 'a'.repeat(64)
 const RP_ID = 'test.local'
 
 function base64url(buf: Buffer): string {
@@ -117,7 +116,6 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
   let app: FastifyInstance
 
   beforeAll(async () => {
-    process.env.ADMIN_KEY = ADMIN_KEY
     app = await buildTestApp(async (fastify) => {
       await fastify.register(signRoute, { prefix: '/v1' })
     })
@@ -126,7 +124,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
   beforeEach(async () => cleanDb())
 
   it('returns 200 with original response when called twice on COMPLETED session', async () => {
-    const { customer } = await createSandboxCustomer()
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const { deviceToken, assertionFor } = await makeWebDevice(customer.id)
     const appId = (await prisma.app.findFirst({ where: { customerId: customer.id } }))!.id
 
@@ -134,11 +132,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     const initRes = await app.inject({
       method: 'POST',
       url: '/v1/sign',
-      headers: {
-        authorization: `Bearer ${ADMIN_KEY}`,
-        'x-sandbox-key': (await prisma.app.findFirst({ where: { customerId: customer.id } }))!
-          .sandboxWriteKey,
-      },
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
       payload: {
         device_token: deviceToken,
         context: 'test_ceremony',
@@ -157,11 +151,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     const completeRes1 = await app.inject({
       method: 'POST',
       url: `/v1/sign/${sessionId}/complete`,
-      headers: {
-        authorization: `Bearer ${ADMIN_KEY}`,
-        'x-sandbox-key': (await prisma.app.findFirst({ where: { customerId: customer.id } }))!
-          .sandboxWriteKey,
-      },
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
       payload: {
         device_token: deviceToken,
         ...assertion,
@@ -177,11 +167,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     const completeRes2 = await app.inject({
       method: 'POST',
       url: `/v1/sign/${sessionId}/complete`,
-      headers: {
-        authorization: `Bearer ${ADMIN_KEY}`,
-        'x-sandbox-key': (await prisma.app.findFirst({ where: { customerId: customer.id } }))!
-          .sandboxWriteKey,
-      },
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
       payload: {
         device_token: deviceToken,
         ...assertion,
@@ -202,17 +188,13 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     // This test documents the old buggy behavior for comparison.
     // After the fix, calling /complete on a COMPLETED session should return
     // the cached response (200) instead of this error.
-    const { customer } = await createSandboxCustomer()
+    const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const { deviceToken, assertionFor } = await makeWebDevice(customer.id)
 
     const initRes = await app.inject({
       method: 'POST',
       url: '/v1/sign',
-      headers: {
-        authorization: `Bearer ${ADMIN_KEY}`,
-        'x-sandbox-key': (await prisma.app.findFirst({ where: { customerId: customer.id } }))!
-          .sandboxWriteKey,
-      },
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
       payload: {
         device_token: deviceToken,
         context: 'test_ceremony',
@@ -236,11 +218,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     const completeRes = await app.inject({
       method: 'POST',
       url: `/v1/sign/${sessionId}/complete`,
-      headers: {
-        authorization: `Bearer ${ADMIN_KEY}`,
-        'x-sandbox-key': (await prisma.app.findFirst({ where: { customerId: customer.id } }))!
-          .sandboxWriteKey,
-      },
+      headers: { authorization: `Bearer ${sandboxWriteKey}` },
       payload: {
         device_token: deviceToken,
         ...assertion,
