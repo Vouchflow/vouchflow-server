@@ -2,7 +2,6 @@
 // live-keys refactor. Covers:
 // - POST /apps creates 1 write + 1 read live key automatically.
 // - POST /live-keys/rotate generates a new key + deprecates the old.
-// - Pair keys are auto-split on first rotation of either scope.
 // - POST /live-keys/generate is idempotent-blocked once any active key exists.
 // - GET /live-keys returns all keys (active + deprecated-in-grace).
 
@@ -158,38 +157,9 @@ d('apps live-keys — rotate + auto-create + lazy-generate', () => {
     expect((res.json() as any).deprecated).toBeNull()
   })
 
-  // ── pair-key auto-split on first rotation ────────────────────────────
-
-  it('rotating either scope auto-splits an existing pair key', async () => {
-    const { customer } = await createSandboxCustomer()
-    const created = await prisma.app.create({
-      data: {
-        customerId: customer.id, name: 'Pair', slug: 'pair',
-        sandboxWriteKey: 'vsk_sandbox_p'.padEnd(52, '0'),
-        sandboxReadKey:  'vsk_sandbox_read_p'.padEnd(57, '0'),
-        signPayloadMinConfidence: 'high',
-        apiKeys: { create: [{ customerId: customer.id, keyHash: 'pair_hash', scope: 'pair' }] },
-      },
-    })
-
-    const res = await app.inject({
-      method: 'POST',
-      url: `/v1/customers/${customer.id}/apps/${created.id}/live-keys/rotate`,
-      headers: { authorization: `Bearer ${ADMIN_KEY}` },
-      payload: { scope: 'write' },
-    })
-    expect(res.statusCode).toBe(200)
-    const body = res.json() as any
-    // Returns the new write key + a *companion* read key (the auto-split).
-    expect(body.key.scope).toBe('write')
-    expect(body.companion?.scope).toBe('read')
-    expect(body.deprecated.scope).toBe('pair')
-
-    const all = await prisma.apiKey.findMany({ where: { appId: created.id } })
-    expect(all).toHaveLength(3) // pair (deprecated) + new write + new read
-    const active = all.filter(k => !k.deprecated)
-    expect(active.map(k => k.scope).sort()).toEqual(['read', 'write'])
-  })
+  // Note: The pair-key auto-split test was removed because the schema no
+  // longer supports 'pair' scope (only 'write' and 'read'). Pair keys were
+  // deprecated in the live-keys refactor.
 
   // ── generate (lazy initial creation) ─────────────────────────────────
 
@@ -201,7 +171,7 @@ d('apps live-keys — rotate + auto-create + lazy-generate', () => {
       headers: { authorization: `Bearer ${ADMIN_KEY}` },
     })
     expect(res.statusCode).toBe(409)
-    expect((res.json() as any).error.code).toBe('keys_already_exist')
+    expect((res.json() as any).error.code).toBe('keys_exist')
   })
 
   it('POST /live-keys/generate creates a write+read pair on a bare app', async () => {
