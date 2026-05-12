@@ -109,6 +109,15 @@ const route: FastifyPluginAsync = async (fastify) => {
           .code(409)
           .send({ error: { code: 'device_inactive', message: `Device status is ${device.status}.` } })
       }
+      // Issue #4: For web devices, verify credentialId is set. An enrollment that
+      // created the device record but where the WebAuthn ceremony was cancelled
+      // leaves an orphan device with no platform credential. Reject these early
+      // rather than minting a challenge for a ceremony doomed to fail.
+      if (device.platform === 'web' && !device.credentialId) {
+        return reply
+          .code(409)
+          .send({ error: { code: 'device_not_enrolled', message: 'Device enrollment incomplete. Please re-enroll.' } })
+      }
       // Sign is supported on web, iOS, and Android (per signPayload RFC, Phase 2).
       if (device.platform !== 'web' && device.platform !== 'ios' && device.platform !== 'android') {
         return reply.code(422).send({
@@ -259,17 +268,6 @@ const route: FastifyPluginAsync = async (fastify) => {
       if (!device || device.deviceToken !== body.device_token) {
         return reply.code(403).send({
           error: { code: 'device_token_mismatch', message: 'device_token does not match the session.' },
-        })
-      }
-
-      // Atomic single-use check
-      const updated = await prisma.verification.updateMany({
-        where: { sessionId: session_id, challengeConsumed: false },
-        data: { challengeConsumed: true },
-      })
-      if (updated.count === 0) {
-        return reply.code(409).send({
-          error: { code: 'challenge_already_consumed', message: 'Challenge has already been used.' },
         })
       }
 
@@ -455,10 +453,14 @@ const route: FastifyPluginAsync = async (fastify) => {
         session_id,
       }
 
-      // Store the completion state and response for idempotency
-      await prisma.verification.update({
-        where: { sessionId: session_id },
+      // Atomic single-use check + completion state update in a transaction.
+      // This ensures the challenge is only consumed if we successfully complete
+      // the verification. If any error occurs before this point, the challenge
+      // remains unconsumed and the SDK can retry.
+      const updated = await prisma.verification.updateMany({
+        where: { sessionId: session_id, challengeConsumed: false },
         data: {
+          challengeConsumed: true,
           state: 'COMPLETED',
           biometricUsed: true,
           confidence,
@@ -466,6 +468,13 @@ const route: FastifyPluginAsync = async (fastify) => {
           completionResponse: responseBody as any,
         },
       })
+      
+      if (updated.count === 0) {
+        // Challenge was already consumed by a previous request
+        return reply.code(409).send({
+          error: { code: 'challenge_already_consumed', message: 'Challenge has already been used.' },
+        })
+      }
       await prisma.device.update({
         where: { id: device.id },
         data: { lastSeen: new Date() },
