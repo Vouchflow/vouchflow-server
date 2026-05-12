@@ -3,6 +3,9 @@
 // (via routes/services) don't crash at import-time. Real values are
 // irrelevant for the tests; only the presence of the var matters.
 
+if (!process.env.DATABASE_URL) {
+  process.env.DATABASE_URL = 'postgresql://vouchflow:test@localhost:5432/vouchflow_test'
+}
 if (!process.env.INTERNAL_HMAC_SECRET) {
   process.env.INTERNAL_HMAC_SECRET = '0'.repeat(64)
 }
