@@ -129,6 +129,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     const appId = (await prisma.app.findFirst({ where: { customerId: customer.id } }))!.id
 
     // Initiate sign
+    const canonicalizedPayload = '{"test":"data"}'
     const initRes = await app.inject({
       method: 'POST',
       url: '/v1/sign',
@@ -136,7 +137,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
       payload: {
         device_token: deviceToken,
         context: 'test_ceremony',
-        payload: { test: 'data' },
+        canonicalized_payload: canonicalizedPayload,
         minimum_confidence: 'medium',
       },
     })
@@ -144,7 +145,6 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     const initBody = initRes.json() as any
     const sessionId = initBody.session_id
     const challenge = initBody.challenge
-    const canonicalizedPayload = initBody.canonicalized_payload
 
     // Complete sign (first time)
     const assertion = assertionFor({ canonicalizedPayload, challengeBase64: challenge })
@@ -191,6 +191,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
     const { customer, sandboxWriteKey } = await createSandboxCustomer()
     const { deviceToken, assertionFor } = await makeWebDevice(customer.id)
 
+    const canonicalizedPayload = '{"test":"data"}'
     const initRes = await app.inject({
       method: 'POST',
       url: '/v1/sign',
@@ -198,7 +199,7 @@ d('POST /v1/sign/:session_id/complete idempotency (Issue #2)', () => {
       payload: {
         device_token: deviceToken,
         context: 'test_ceremony',
-        payload: { test: 'data' },
+        canonicalized_payload: canonicalizedPayload,
         minimum_confidence: 'medium',
       },
     })
