@@ -218,6 +218,23 @@ const route: FastifyPluginAsync = async (fastify) => {
           error: { code: 'invalid_session_type', message: 'Session is not a sign session.' },
         })
       }
+      // Idempotency: if session is already COMPLETED and we have a cached response,
+      // return it instead of failing. This handles the case where the first /complete
+      // succeeded server-side but the response was lost (network blip, HMR reload, etc).
+      if (session.state === 'COMPLETED') {
+        if (session.completionResponse) {
+          return reply.code(200).send(session.completionResponse)
+        }
+        // COMPLETED but no cached response - this shouldn't happen in normal flow,
+        // but return a helpful error rather than letting it proceed.
+        return reply.code(409).send({
+          error: {
+            code: 'ceremony_already_completed',
+            message: 'Session is already completed. Cannot retrieve original response.',
+            current_state: session.state,
+          },
+        })
+      }
       if (session.state !== 'INITIATED') {
         return reply.code(409).send({
           error: {
@@ -398,19 +415,6 @@ const route: FastifyPluginAsync = async (fastify) => {
       }
 
       const completedAt = new Date()
-      await prisma.verification.update({
-        where: { sessionId: session_id },
-        data: {
-          state: 'COMPLETED',
-          biometricUsed: true,
-          confidence,
-          completedAt,
-        },
-      })
-      await prisma.device.update({
-        where: { id: device.id },
-        data: { lastSeen: new Date() },
-      })
 
       // Build the JWS assertion payload (the customer-verifiable bundle).
       // signing_device_id is the stable per-credential identifier we expose
@@ -438,6 +442,34 @@ const route: FastifyPluginAsync = async (fastify) => {
 
       const assertion = await signAssertion(jwsPayload)
 
+      // Build the response object - we'll store this for idempotency
+      const responseBody = {
+        verified: true,
+        confidence,
+        device_token: device.deviceToken,
+        signing_device_id: signingDeviceId,
+        signed_at: completedAt.toISOString(),
+        assertion,
+        platform: device.platform,
+        session_id,
+      }
+
+      // Store the completion state and response for idempotency
+      await prisma.verification.update({
+        where: { sessionId: session_id },
+        data: {
+          state: 'COMPLETED',
+          biometricUsed: true,
+          confidence,
+          completedAt,
+          completionResponse: responseBody as any,
+        },
+      })
+      await prisma.device.update({
+        where: { id: device.id },
+        data: { lastSeen: new Date() },
+      })
+
       // Webhook (mirrors verify.complete dispatch)
       await dispatchWebhook({ customerId: session.customerId, appId: session.appId }, {
         event: 'sign.complete',
@@ -449,16 +481,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         api_version: config.apiVersion,
       })
 
-      return reply.code(200).send({
-        verified: true,
-        confidence,
-        device_token: device.deviceToken,
-        signing_device_id: signingDeviceId,
-        signed_at: completedAt.toISOString(),
-        assertion,
-        platform: device.platform,
-        session_id,
-      })
+      return reply.code(200).send(responseBody)
     },
   })
 }

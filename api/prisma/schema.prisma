@@ -188,6 +188,7 @@ model Verification {
   expiresAt        DateTime  @map("expires_at")
   retrySessionId   String?   @map("retry_session_id")
   completedAt      DateTime? @map("completed_at")
+  completionResponse Json?   @map("completion_response")  // Idempotency: cached response for COMPLETED sessions
   createdAt        DateTime  @default(now()) @map("created_at")
 
   // Fallback OTP fields (stored on same record — no separate table specified in brief)

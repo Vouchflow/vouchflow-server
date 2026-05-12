@@ -199,6 +199,22 @@ const route: FastifyPluginAsync = async (fastify) => {
         }
         const body = parsed.data
 
+        // Idempotency: if session is already COMPLETED and we have a cached response,
+        // return it instead of failing. This handles the case where the first /complete
+        // succeeded server-side but the response was lost (network blip, HMR reload, etc).
+        if (session.state === 'COMPLETED') {
+          if (session.completionResponse) {
+            return reply.code(200).send(session.completionResponse)
+          }
+          // COMPLETED but no cached response - shouldn't happen normally
+          return reply.code(409).send({
+            error: {
+              code: 'ceremony_already_completed',
+              message: 'Session is already completed. Cannot retrieve original response.',
+              current_state: session.state,
+            },
+          })
+        }
         if (session.state !== 'INITIATED') {
           return reply.code(409).send({
             error: {
@@ -350,30 +366,7 @@ const route: FastifyPluginAsync = async (fastify) => {
           ? computeConfidence({ device, biometricUsed: body.biometric_used, fallbackUsed: false })
           : null
 
-        const completedSession = await prisma.verification.update({
-          where: { sessionId: session_id },
-          data: {
-            state: newState,
-            biometricUsed: biometricUsed,
-            confidence,
-            completedAt: new Date(),
-          },
-        })
-
-        // Update device last_seen
-        await prisma.device.update({ where: { id: device.id }, data: { lastSeen: new Date() } })
-
-        // ── Network graph write (§15) ─────────────────────────────────────────
-        if (signatureValid && device.networkParticipant && !request.isSandbox) {
-          await writeNetworkVerificationEvent({
-            device,
-            customerId: session.customerId,
-            confidence: confidence!,
-            biometricUsed: body.biometric_used,
-          })
-        }
-
-        // ── Fetch network signals for response ───────────────────────────────
+        // ── Fetch network signals for response (before state transition) ────
         const networkDevice = await prisma.networkDevice.findUnique({
           where: { keyFingerprint: device.keyFingerprint },
         })
@@ -382,21 +375,8 @@ const route: FastifyPluginAsync = async (fastify) => {
           (Date.now() - device.enrolledAt.getTime()) / (1000 * 60 * 60 * 24),
         )
 
-        // ── Dispatch webhook ─────────────────────────────────────────────────
-        // §7: device_token intentionally absent from webhook payload
-        if (signatureValid) {
-          await dispatchWebhook({ customerId: session.customerId, appId: session.appId }, {
-            event: 'verification.complete',
-            session_id,
-            verified: true,
-            confidence: confidence!,
-            context: session.context,
-            timestamp: new Date().toISOString(),
-            api_version: config.apiVersion,
-          })
-        }
-
-        return reply.code(200).send({
+        // Build the response object - we'll store this for idempotency
+        const responseBody = {
           verified: signatureValid,
           confidence,
           session_state: newState,
@@ -413,7 +393,48 @@ const route: FastifyPluginAsync = async (fastify) => {
           },
           fallback_used: false,
           context: session.context,
+        }
+
+        // Store the completion state and response for idempotency
+        const completedSession = await prisma.verification.update({
+          where: { sessionId: session_id },
+          data: {
+            state: newState,
+            biometricUsed: biometricUsed,
+            confidence,
+            completedAt: new Date(),
+            completionResponse: signatureValid ? (responseBody as any) : null,
+          },
         })
+
+        // Update device last_seen
+        await prisma.device.update({ where: { id: device.id }, data: { lastSeen: new Date() } })
+
+        // ── Network graph write (§15) ─────────────────────────────────────────
+        if (signatureValid && device.networkParticipant && !request.isSandbox) {
+          await writeNetworkVerificationEvent({
+            device,
+            customerId: session.customerId,
+            confidence: confidence!,
+            biometricUsed: body.biometric_used,
+          })
+        }
+
+        // ── Dispatch webhook ─────────────────────────────────────────────────
+        // §7: device_token intentionally absent from webhook payload
+        if (signatureValid) {
+          await dispatchWebhook({ customerId: session.customerId, appId: session.appId }, {
+            event: 'verification.complete',
+            session_id,
+            verified: true,
+            confidence: confidence!,
+            context: session.context,
+            timestamp: new Date().toISOString(),
+            api_version: config.apiVersion,
+          })
+        }
+
+        return reply.code(200).send(responseBody)
       },
     })
 
@@ -648,6 +669,21 @@ async function handleFallbackComplete(
   }
   const body = otpParsed.data
 
+  // Idempotency: if fallback is already complete and we have a cached response, return it
+  if (session.state === 'FALLBACK_COMPLETE') {
+    if (session.completionResponse) {
+      return reply.code(200).send(session.completionResponse)
+    }
+    // FALLBACK_COMPLETE but no cached response - shouldn't happen normally
+    return reply.code(409).send({
+      error: {
+        code: 'ceremony_already_completed',
+        message: 'Fallback is already completed. Cannot retrieve original response.',
+        current_state: session.state,
+      },
+    })
+  }
+
   // §7: FALLBACK_LOCKED — max attempts exceeded (locked for 1 hour)
   if (session.state === 'FALLBACK_LOCKED' as any) {
     return reply.code(423).send({ error: { code: 'fallback_locked', message: 'Too many OTP attempts. Try again in 1 hour.' } })
@@ -686,6 +722,22 @@ async function handleFallbackComplete(
   const completedAt = new Date()
   const timeToComplete = Math.floor((completedAt.getTime() - session.createdAt.getTime()) / 1000)
 
+  // Build the response object for idempotency
+  const responseBody = {
+    verified: true,
+    confidence: 'low',
+    session_state: 'FALLBACK_COMPLETE',
+    fallback_signals: {
+      ip_consistent: session.ipAddress === request.ip,
+      disposable_email_domain: session.disposableEmailDomain ?? false,
+      device_has_prior_verifications: false, // populated from network_devices if device enrolled
+      email_domain_age_days: null,     // TODO: implement domain age lookup
+      otp_attempts: newAttempts,
+      time_to_complete_seconds: timeToComplete,
+    },
+  }
+
+  // Store completion state and response for idempotency
   await prisma.verification.update({
     where: { sessionId },
     data: {
@@ -693,6 +745,7 @@ async function handleFallbackComplete(
       confidence: 'low',
       completedAt,
       fallbackTimeToCompleteSeconds: timeToComplete,
+      completionResponse: responseBody as any,
     },
   })
 
@@ -709,20 +762,7 @@ async function handleFallbackComplete(
     api_version: config.apiVersion,
   })
 
-  // §7 fallback_signals from brief
-  return reply.code(200).send({
-    verified: true,
-    confidence: 'low',
-    session_state: 'FALLBACK_COMPLETE',
-    fallback_signals: {
-      ip_consistent: session.ipAddress === request.ip,
-      disposable_email_domain: session.disposableEmailDomain ?? false,
-      device_has_prior_verifications: false, // populated from network_devices if device enrolled
-      email_domain_age_days: null,     // TODO: implement domain age lookup
-      otp_attempts: newAttempts,
-      time_to_complete_seconds: timeToComplete,
-    },
-  })
+  return reply.code(200).send(responseBody)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
