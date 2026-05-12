@@ -271,6 +271,7 @@ d('POST /v1/sign — initiate', () => {
         publicKey: crypto.randomBytes(64).toString('base64'),
         keyFingerprint: crypto.randomBytes(32).toString('hex'),
         platform: 'web',
+        credentialId: crypto.randomBytes(16).toString('base64url'), // Issue #4: web devices need credentialId
         confidenceCeiling: 'medium',
         status: 'active',
         isSandbox: true,
