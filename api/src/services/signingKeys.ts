@@ -16,7 +16,7 @@
 //   VOUCHFLOW_SIGNING_KEY_ENCRYPTION_KEY  — 32-byte hex string for pgp_sym_encrypt
 
 import crypto from 'node:crypto'
-import { importJWK, exportJWK, SignJWT } from 'jose'
+import { importJWK, exportJWK, SignJWT, type KeyLike } from 'jose'
 import { prisma } from '../lib/prisma.js'
 
 // ── In-memory cache ──────────────────────────────────────────────────────────
@@ -24,7 +24,7 @@ import { prisma } from '../lib/prisma.js'
 // If no active key exists, one is generated. This cache avoids DB round-trips
 // and decryption overhead on every /v1/sign/complete call.
 
-let cachedSigner: { kid: string; privateKey: crypto.KeyLike } | null = null
+let cachedSigner: { kid: string; privateKey: KeyLike } | null = null
 
 // ── Encryption helpers (same pattern as webhookSecrets.ts) ────────────────────
 
@@ -59,7 +59,7 @@ async function decryptPrivateJwk(encrypted: Buffer): Promise<string> {
  * the signer. The private JWK is encrypted at rest; the public JWK is stored
  * in plaintext for JWKS serving.
  */
-async function generateSigningKey(): Promise<{ kid: string; privateKey: crypto.KeyLike }> {
+async function generateSigningKey(): Promise<{ kid: string; privateKey: KeyLike }> {
   // Generate Ed25519 key pair via Node.js crypto
   const { publicKey, privateKey } = crypto.generateKeyPairSync('ed25519')
 
@@ -127,7 +127,7 @@ async function generateSigningKey(): Promise<{ kid: string; privateKey: crypto.K
  * The private key is cached in memory after first decryption to avoid
  * repeated pgp_sym_decrypt calls on the hot path.
  */
-export async function getActiveSigningKey(): Promise<{ kid: string; privateKey: crypto.KeyLike }> {
+export async function getActiveSigningKey(): Promise<{ kid: string; privateKey: KeyLike }> {
   if (cachedSigner) return cachedSigner
 
   // Look for an active key in DB
