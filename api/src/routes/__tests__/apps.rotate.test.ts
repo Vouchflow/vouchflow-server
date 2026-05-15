@@ -227,4 +227,31 @@ d('apps live-keys — rotate + auto-create + lazy-generate', () => {
     expect(activeKeys).toHaveLength(2)
     expect(activeKeys.map((k: any) => k.scope).sort()).toEqual(['read', 'write'])
   })
+
+  // ── keyLast4 — non-secret identification fragment ────────────────────
+
+  it('rotate populates keyLast4 and GET /live-keys surfaces it', async () => {
+    const f = await freshApp()
+    const rot = await app.inject({
+      method: 'POST',
+      url: `/v1/customers/${f.customerId}/apps/${f.appId}/live-keys/rotate`,
+      headers: { authorization: `Bearer ${ADMIN_KEY}` },
+      payload: { scope: 'write' },
+    })
+    expect(rot.statusCode).toBe(200)
+    const newRaw = (rot.json() as any).key.rawKey as string
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/v1/customers/${f.customerId}/apps/${f.appId}/live-keys`,
+      headers: { authorization: `Bearer ${ADMIN_KEY}` },
+    })
+    const { keys } = res.json() as any
+    // The freshly rotated write key carries the last 4 of its raw value.
+    const activeWrite = keys.find((k: any) => k.scope === 'write' && !k.deprecated)
+    expect(activeWrite.keyLast4).toBe(newRaw.slice(-4))
+    // The read key auto-created by POST /apps also carries a last4.
+    const activeRead = keys.find((k: any) => k.scope === 'read' && !k.deprecated)
+    expect(activeRead.keyLast4).toBe(f.readKey.slice(-4))
+  })
 })

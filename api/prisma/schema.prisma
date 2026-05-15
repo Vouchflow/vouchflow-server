@@ -105,6 +105,10 @@ model ApiKey {
   customerId String   @map("customer_id")
   appId      String   @map("app_id")            // post-apps-migration: every live key belongs to an App
   keyHash    String   @unique @map("key_hash")   // SHA-256 of raw key
+  // Last 4 chars of the raw key — non-secret, shown in the dashboard so a key
+  // is identifiable after creation (the raw key itself is never stored). Null
+  // for keys created before this column; populated on every new key + rotation.
+  keyLast4   String?  @map("key_last4")
   scope      ApiScope
   // §13: 14-day rotation overlap — deprecated keys remain valid until deprecatedAt + 14 days
   deprecated    Boolean   @default(false)

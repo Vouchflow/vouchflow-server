@@ -42,6 +42,25 @@ d('apps live-keys', () => {
     expect(body.readKey.scope).toBe('read')
   })
 
+  it('created live keys carry keyLast4 matching the raw key', async () => {
+    const { customer, app: a } = await createSandboxCustomer()
+    const post = await app.inject({
+      method: 'POST', url: `/v1/customers/${customer.id}/apps/${a.id}/live-keys`,
+      headers: { authorization: `Bearer ${ADMIN_KEY}` },
+      payload: {},
+    })
+    const body = post.json() as any
+    const get = await app.inject({
+      method: 'GET', url: `/v1/customers/${customer.id}/apps/${a.id}/live-keys`,
+      headers: { authorization: `Bearer ${ADMIN_KEY}` },
+    })
+    const { keys } = get.json() as any
+    const writeKey = keys.find((k: any) => k.scope === 'write')
+    const readKey  = keys.find((k: any) => k.scope === 'read')
+    expect(writeKey.keyLast4).toBe(body.writeKey.rawKey.slice(-4))
+    expect(readKey.keyLast4).toBe(body.readKey.rawKey.slice(-4))
+  })
+
   it('POST { scope: "write" } creates a single write key', async () => {
     const { customer, app: a } = await createSandboxCustomer()
     const res = await app.inject({

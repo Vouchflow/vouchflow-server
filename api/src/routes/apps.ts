@@ -30,11 +30,11 @@ const MAX_ACTIVE_KEYS_PER_APP = 20
 
 const hashKey = (k: string) => crypto.createHash('sha256').update(k).digest('hex')
 
-function generateLiveKey(scope: 'write' | 'read'): { rawKey: string; hash: string } {
+function generateLiveKey(scope: 'write' | 'read'): { rawKey: string; hash: string; last4: string } {
   const raw = scope === 'write'
     ? `vsk_live_${crypto.randomBytes(20).toString('hex')}`
     : `vsk_live_read_${crypto.randomBytes(20).toString('hex')}`
-  return { rawKey: raw, hash: hashKey(raw) }
+  return { rawKey: raw, hash: hashKey(raw), last4: raw.slice(-4) }
 }
 
 const CONFIDENCE_RANK: Record<string, number> = { low: 0, medium: 1, high: 2 }
@@ -285,8 +285,8 @@ export default async function appsRoute(fastify: FastifyInstance) {
           signPayloadMinConfidence: 'high',
           apiKeys: {
             create: [
-              { customerId, keyHash: liveWrite.hash, scope: 'write' },
-              { customerId, keyHash: liveRead.hash,  scope: 'read'  },
+              { customerId, keyHash: liveWrite.hash, keyLast4: liveWrite.last4, scope: 'write' },
+              { customerId, keyHash: liveRead.hash,  keyLast4: liveRead.last4,  scope: 'read'  },
             ],
           },
         },
@@ -562,7 +562,7 @@ export default async function appsRoute(fastify: FastifyInstance) {
       // keys are still accepted (14-day grace from deprecatedAt).
       const keys = await prisma.apiKey.findMany({
         where: { appId },
-        select: { id: true, scope: true, createdAt: true, lastUsedAt: true, deprecated: true, deprecatedAt: true },
+        select: { id: true, scope: true, keyLast4: true, createdAt: true, lastUsedAt: true, deprecated: true, deprecatedAt: true },
         orderBy: [{ deprecated: 'asc' }, { createdAt: 'desc' }],
       })
       return reply.send({ keys })
@@ -602,29 +602,21 @@ export default async function appsRoute(fastify: FastifyInstance) {
         })
       }
 
-      const hashKey = (k: string) => crypto.createHash('sha256').update(k).digest('hex')
-      const generate = (s: 'write' | 'read'): { rawKey: string; hash: string } => {
-        const raw = s === 'write'
-          ? `vsk_live_${crypto.randomBytes(20).toString('hex')}`
-          : `vsk_live_read_${crypto.randomBytes(20).toString('hex')}`
-        return { rawKey: raw, hash: hashKey(raw) }
-      }
-
       if (scope === 'pair') {
-        const w = generate('write')
-        const r = generate('read')
+        const w = generateLiveKey('write')
+        const r = generateLiveKey('read')
         const [writeKey, readKey] = await Promise.all([
-          prisma.apiKey.create({ data: { customerId, appId, keyHash: w.hash, scope: 'write' } }),
-          prisma.apiKey.create({ data: { customerId, appId, keyHash: r.hash, scope: 'read'  } }),
+          prisma.apiKey.create({ data: { customerId, appId, keyHash: w.hash, keyLast4: w.last4, scope: 'write' } }),
+          prisma.apiKey.create({ data: { customerId, appId, keyHash: r.hash, keyLast4: r.last4, scope: 'read'  } }),
         ])
         return reply.send({
           writeKey: { id: writeKey.id, rawKey: w.rawKey, scope: 'write', createdAt: writeKey.createdAt },
           readKey:  { id: readKey.id,  rawKey: r.rawKey, scope: 'read',  createdAt: readKey.createdAt  },
         })
       }
-      const g = generate(scope)
+      const g = generateLiveKey(scope)
       const created = await prisma.apiKey.create({
-        data: { customerId, appId, keyHash: g.hash, scope },
+        data: { customerId, appId, keyHash: g.hash, keyLast4: g.last4, scope },
       })
       return reply.send({
         key: { id: created.id, rawKey: g.rawKey, scope, createdAt: created.createdAt },
@@ -699,6 +691,7 @@ export default async function appsRoute(fastify: FastifyInstance) {
           customerId,
           scope,
           keyHash: newKey.hash,
+          keyLast4: newKey.last4,
         },
         select: { id: true, scope: true, createdAt: true },
       })
@@ -750,8 +743,8 @@ export default async function appsRoute(fastify: FastifyInstance) {
 
       await prisma.apiKey.createMany({
         data: [
-          { appId, customerId, scope: 'write', keyHash: writeKey.hash },
-          { appId, customerId, scope: 'read', keyHash: readKey.hash },
+          { appId, customerId, scope: 'write', keyHash: writeKey.hash, keyLast4: writeKey.last4 },
+          { appId, customerId, scope: 'read', keyHash: readKey.hash, keyLast4: readKey.last4 },
         ],
       })
 
