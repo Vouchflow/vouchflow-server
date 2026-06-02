@@ -269,29 +269,12 @@ AAAA www.vouchflow.dev → 2a09:8280:1::ff:19e0:0
 | Event | Action |
 |---|---|
 | Pull request to `main` | TypeScript build + Prisma schema validation |
-| Push to `main` | Build + deploy to **staging** (`vouchflow-server-staging.fly.dev`) |
 | Push tag `server-v*` | Build + deploy to **production** |
 
 ### Required repository secrets
 
 | Secret | Description |
 |---|---|
-| `FLY_STAGING_API_TOKEN` | Fly.io token scoped to `vouchflow-server-staging` |
 | `FLY_API_TOKEN` | Fly.io token scoped to `vouchflow-server` |
 
-### First-time staging setup (already complete — staging infra is live)
-
-```bash
-fly apps create vouchflow-server-staging
-fly postgres create --name vouchflow-db-staging
-fly secrets set -a vouchflow-server-staging \
-  DATABASE_URL="postgres://..." \
-  REDIS_URL="redis://..." \
-  INTERNAL_HMAC_SECRET="$(openssl rand -hex 32)" \
-  WEBHOOK_SECRET_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
-  RESEND_API_KEY="re_..." \
-  APPLE_APP_ATTEST_ROOT_CA="-----BEGIN CERTIFICATE-----..." \
-  GOOGLE_HARDWARE_ATTESTATION_ROOT_CA="-----BEGIN CERTIFICATE-----..."
-```
-
-Configure GitHub Environments named `staging` and `production` to add required reviewers and deployment protection rules.
+Configure a GitHub Environment named `production` to add required reviewers and deployment protection rules.

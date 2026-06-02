@@ -5,7 +5,7 @@
 //
 // Tests using this helper require a real Postgres pointed at by DATABASE_URL.
 // In CI the workflow brings up postgres:16-alpine via service containers
-// (server.yml + staging.yml). Locally:
+// (server.yml). Locally:
 //   sudo docker run -d --rm --name vf-test-pg -p 15432:5432 \
 //     -e POSTGRES_USER=vouchflow -e POSTGRES_PASSWORD=test \
 //     -e POSTGRES_DB=vouchflow_test postgres:16-alpine
