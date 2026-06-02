@@ -44,10 +44,10 @@ Vouchflow-API-Version: 2026-04-01
 
 | Environment | Base URL | Key prefix |
 |---|---|---|
-| Sandbox | `https://sandbox.api.vouchflow.dev/v1` | `vsk_sandbox_` / `vsk_sandbox_read_` |
+| Sandbox | `https://api.vouchflow.dev/v1` | `vsk_sandbox_` / `vsk_sandbox_read_` |
 | Production | `https://api.vouchflow.dev/v1` | `vsk_live_` / `vsk_live_read_` |
 
-Sandbox verifications are free, isolated from the network graph, and do not affect billing. The SDK selects the correct host automatically based on the `environment` setting in `VouchflowConfig` / `VouchflowConfig.kt`.
+Sandbox verifications are free, isolated from the network graph, and do not affect billing. Sandbox and production requests use the production API host; the key prefix selects the correct server-side data plane.
 
 If a key is within its 14-day rotation window, the response includes `Vouchflow-Key-Deprecated: true`.
 
