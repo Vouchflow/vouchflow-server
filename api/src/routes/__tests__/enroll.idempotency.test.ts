@@ -131,11 +131,11 @@ d('POST /v1/enroll — idempotency replay protection', () => {
     })
     const firstBody = first.json() as { device_token: string }
 
-    // Simulate Redis eviction.
-    const { redis } = await import('../../lib/redis.js')
-    await redis.del(`idempotency:${idempotencyKey}`)
-
-    // Replay — must still return the same body (DB fallback hit).
+    // (Previously this test deleted a Redis cache entry to force a DB
+    // fallback. The Redis cache layer is gone — every lookup is Postgres —
+    // so the test reduces to "second call with same key returns the same
+    // body". Kept as a regression guard against accidentally inserting a
+    // new layer that would short-circuit the DB read.)
     const second = await app.inject({
       method: 'POST',
       url: '/v1/enroll',
@@ -169,13 +169,13 @@ d('POST /v1/enroll — idempotency replay protection', () => {
     })
     const firstBody = first.json() as { device_token: string }
 
-    // Force-expire: rewind the DB record's expiresAt and drop the Redis cache.
+    // Force-expire: rewind the DB record's expiresAt. The Postgres lookup
+    // honours expiresAt, so we don't need anything else (used to also drop
+    // a Redis cache entry; the cache layer is gone).
     await prisma.idempotencyRecord.update({
       where: { key: idempotencyKey },
       data:  { expiresAt: new Date(Date.now() - 1000) },
     })
-    const { redis } = await import('../../lib/redis.js')
-    await redis.del(`idempotency:${idempotencyKey}`)
 
     const second = await app.inject({
       method: 'POST',

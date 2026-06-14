@@ -3,14 +3,14 @@ import crypto from 'node:crypto'
 import { z } from 'zod'
 import { Verification } from '@prisma/client'
 import { prisma } from '../lib/prisma.js'
-import { redis } from '../lib/redis.js'
+import { counterIncr } from '../lib/inMemoryCounter.js'
 import { makeApiKeyAuthPlugin } from '../plugins/apiKeyAuth.js'
 import { computeConfidence } from '../services/confidence.js'
 import { dispatchWebhook } from '../services/webhooks.js'
 import { generateOtp, hashOtp, verifyOtp, sendOtp, OTP_EXPIRY_MINUTES, OTP_MAX_ATTEMPTS } from '../services/otp.js'
 import { isDisposableEmailDomain } from '../services/disposableEmail.js'
 import { verifyWebAuthnAssertion, extractRpIdFromClientData } from '../services/webauthn.js'
-import { anomalyQueue } from '../lib/queues.js'
+import { scoreAnomaly } from '../services/anomaly.js'
 import { config } from '../config.js'
 import { loadAppPolicy, resolveVerifyMin } from '../services/appConfidencePolicy.js'
 
@@ -498,20 +498,18 @@ const route: FastifyPluginAsync = async (fastify) => {
           })
         }
 
-        // ── Per-IP rate limit ─────────────────────────────────────────────
-        // §11: Per IP: max 10 fallback initiations per hour
-        const ipKey = `fallback_ip:${request.ip}`
-        const ipCount = await redis.incr(ipKey)
-        if (ipCount === 1) await redis.expire(ipKey, 3600)
+        // ── Per-IP rate limit (§11: max 10 fallback initiations / hr) ───
+        // In-process counter (was Redis INCR+EXPIRE). Per-machine, not
+        // per-tenant — same trade-off we accepted for the global
+        // @fastify/rate-limit move off Redis. At 1 API machine the limit
+        // is effectively the same; if we add machines we revisit.
+        const ipCount = counterIncr(`fallback_ip:${request.ip}`, 3600)
         if (ipCount > 10) {
           return reply.code(429).send({ error: { code: 'rate_limited', message: 'Too many fallback attempts from this IP.' } })
         }
 
-        // ── Per-email_hash rate limit ─────────────────────────────────────
-        // §11: Per email_hash: max 5 OTP sends per hour
-        const emailKey = `fallback_email:${body.email_hash}`
-        const emailCount = await redis.incr(emailKey)
-        if (emailCount === 1) await redis.expire(emailKey, 3600)
+        // ── Per-email_hash rate limit (§11: max 5 OTP sends / hr) ────────
+        const emailCount = counterIncr(`fallback_email:${body.email_hash}`, 3600)
         if (emailCount > 5) {
           return reply.code(429).send({ error: { code: 'rate_limited', message: 'Too many OTP requests for this email.' } })
         }
@@ -878,5 +876,8 @@ async function writeNetworkVerificationEvent(params: {
     })
   })
 
-  await anomalyQueue.add('score', { keyFingerprint: params.device.keyFingerprint })
+  // §15 anomaly scoring runs inline — see enroll.ts for the rationale.
+  void scoreAnomaly({ keyFingerprint: params.device.keyFingerprint }).catch((err) => {
+    console.error(`[anomaly] inline scoring failed for ${params.device.keyFingerprint}: ${err.message}`)
+  })
 }

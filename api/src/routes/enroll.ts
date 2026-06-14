@@ -2,11 +2,10 @@ import { FastifyPluginAsync } from 'fastify'
 import crypto from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { redis } from '../lib/redis.js'
 import { makeApiKeyAuthPlugin } from '../plugins/apiKeyAuth.js'
 import { validateAttestation, buildAttestationConfig } from '../services/attestation.js'
 import { validateWebAuthnAttestation } from '../services/webauthn.js'
-import { anomalyQueue } from '../lib/queues.js'
+import { scoreAnomaly } from '../services/anomaly.js'
 
 // §7 POST /v1/enroll rate limit: 10/minute per customer + IP
 const RATE_LIMIT_MAX = 10
@@ -81,23 +80,18 @@ const route: FastifyPluginAsync = async (fastify) => {
       }
       const body: EnrollRequest = parsed.data
 
-      // ── Idempotency check (Redis first, DB fallback) ─────────────────────
-      // §7: "if seen within 24h, return original response"
-      const idempotencyRedisKey = `idempotency:${body.idempotency_key}`
-      const cached = await redis.get(idempotencyRedisKey)
-      if (cached) {
-        await normalizeLatency(start, ENROLL_RESPONSE_TIME_MS)
-        return reply.code(200).send(JSON.parse(cached))
-      }
-
+      // ── Idempotency check (Postgres, single source of truth) ────────────
+      // §7: "if seen within 24h, return original response". Used to read a
+      // Redis cache first with Postgres as fallback; the Redis hop added
+      // ~1ms in the happy path and is gone now that we've torn out the
+      // Upstash dependency. Postgres lookup on `key` (unique index) is
+      // still sub-millisecond at our scale.
       const dbRecord = await prisma.idempotencyRecord.findUnique({
         where: { key: body.idempotency_key },
       })
       if (dbRecord && dbRecord.expiresAt > new Date()) {
-        const response = JSON.parse(dbRecord.responseJson)
-        await redis.set(idempotencyRedisKey, dbRecord.responseJson, 'EX', IDEMPOTENCY_TTL_SECONDS)
         await normalizeLatency(start, ENROLL_RESPONSE_TIME_MS)
-        return reply.code(200).send(response)
+        return reply.code(200).send(JSON.parse(dbRecord.responseJson))
       }
 
       // ── Public key uniqueness check ───────────────────────────────────────
@@ -290,7 +284,6 @@ const route: FastifyPluginAsync = async (fastify) => {
         create: { key: body.idempotency_key, responseJson, expiresAt },
         update: { responseJson, expiresAt },
       })
-      await redis.set(idempotencyRedisKey, responseJson, 'EX', IDEMPOTENCY_TTL_SECONDS)
 
       // ── Normalize response time (§11 timing attack mitigation) ───────────
       await normalizeLatency(start, ENROLL_RESPONSE_TIME_MS)
@@ -353,6 +346,11 @@ async function writeNetworkEvent(params: {
     })
   })
 
-  // Enqueue async anomaly scoring per §15
-  await anomalyQueue.add('score', { keyFingerprint: params.keyFingerprint })
+  // §15 anomaly scoring runs inline (no queue) — `void` keeps the response
+  // path fast even when scoring does a few extra Postgres reads. Errors are
+  // swallowed: scoring is best-effort; missing it just means the row keeps
+  // its old riskScore until the next enroll/verify recomputes.
+  void scoreAnomaly({ keyFingerprint: params.keyFingerprint }).catch((err) => {
+    console.error(`[anomaly] inline scoring failed for ${params.keyFingerprint}: ${err.message}`)
+  })
 }

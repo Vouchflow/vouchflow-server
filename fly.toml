@@ -4,7 +4,6 @@
 # First-time setup:
 #   fly secrets set \
 #     DATABASE_URL="postgres://..." \
-#     REDIS_URL="redis://..." \
 #     INTERNAL_HMAC_SECRET="$(openssl rand -hex 32)" \
 #     WEBHOOK_SECRET_ENCRYPTION_KEY="$(openssl rand -hex 32)" \
 #     RESEND_API_KEY="re_..." \
@@ -26,8 +25,11 @@ primary_region = "iad"
   release_command = "npx prisma migrate deploy"
 
 [processes]
-  app    = "node dist/index.js"
-  worker = "node dist/workers/index.js"
+  app = "node dist/index.js"
+  # The dedicated `worker` process group used to run BullMQ consumers for the
+  # webhooks + anomaly queues. Both ran inline now (anomaly: at the end of
+  # enroll/verify; webhooks: dispatch inline + a 30s Postgres-tick retry from
+  # index.ts). The worker machine is intentionally absent.
 
 [env]
   NODE_ENV    = "production"

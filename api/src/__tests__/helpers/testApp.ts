@@ -23,8 +23,7 @@ import { prisma } from '../../lib/prisma.js'
 // Redis. Integration suites gate themselves with this — see
 // `const d = HAS_DB ? describe : describe.skip`. The bare DATABASE_URL is
 // always set (Prisma needs it at import time), so it's not a reliable signal.
-export const HAS_DB    = Boolean(process.env._VF_TEST_HAS_DB)
-export const HAS_REDIS = Boolean(process.env._VF_TEST_HAS_REDIS)
+export const HAS_DB = Boolean(process.env._VF_TEST_HAS_DB)
 
 /** Mints a sandbox-keyed Customer row directly via Prisma — bypasses
  *  POST /v1/customers (which talks to the web service). */

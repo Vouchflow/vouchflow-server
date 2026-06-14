@@ -2,7 +2,6 @@ import { FastifyPluginAsync } from 'fastify'
 import crypto from 'node:crypto'
 import { z } from 'zod'
 import { prisma } from '../lib/prisma.js'
-import { redis } from '../lib/redis.js'
 import { makeApiKeyAuthPlugin } from '../plugins/apiKeyAuth.js'
 import { computeConfidence } from '../services/confidence.js'
 import { dispatchWebhook } from '../services/webhooks.js'
@@ -80,13 +79,21 @@ const route: FastifyPluginAsync = async (fastify) => {
       }
       const body = parsed.data
 
-      // Idempotency replay (Redis-first, DB fallback) — return the cached
-      // {session_id, challenge} pair if seen within 24h. Key on both
-      // idempotency_key AND device_token to prevent cross-device collisions.
-      if (body.idempotency_key) {
-        const cacheKey = `sign_idem:${request.customerId}:${body.device_token}:${body.idempotency_key}`
-        const cached = await redis.get(cacheKey).catch(() => null)
-        if (cached) return reply.code(200).send(JSON.parse(cached))
+      // Idempotency replay — return the cached {session_id, challenge} pair
+      // if seen within 24h. Key on (customer, device, idempotency_key) so
+      // the same key from a different device doesn't collide. Stored in the
+      // shared `idempotency_records` table (formerly Redis; the Redis hop
+      // was torn out when we killed the Upstash dependency).
+      const signIdempotencyKey = body.idempotency_key
+        ? `sign:${request.customerId}:${body.device_token}:${body.idempotency_key}`
+        : null
+      if (signIdempotencyKey) {
+        const cached = await prisma.idempotencyRecord.findUnique({
+          where: { key: signIdempotencyKey },
+        })
+        if (cached && cached.expiresAt > new Date()) {
+          return reply.code(200).send(JSON.parse(cached.responseJson))
+        }
       }
 
       const device = await prisma.device.findUnique({ where: { deviceToken: body.device_token } })
@@ -179,10 +186,14 @@ const route: FastifyPluginAsync = async (fastify) => {
         session_state: 'INITIATED' as const,
         payload_sha256: payloadSha256,
       }
-      if (body.idempotency_key) {
-        const cacheKey = `sign_idem:${request.customerId}:${body.device_token}:${body.idempotency_key}`
-        await redis
-          .set(cacheKey, JSON.stringify(response), 'EX', SIGN_IDEMPOTENCY_TTL_SECONDS)
+      if (signIdempotencyKey) {
+        const expiresAt = new Date(Date.now() + SIGN_IDEMPOTENCY_TTL_SECONDS * 1000)
+        await prisma.idempotencyRecord
+          .upsert({
+            where: { key: signIdempotencyKey },
+            create: { key: signIdempotencyKey, responseJson: JSON.stringify(response), expiresAt },
+            update: { responseJson: JSON.stringify(response), expiresAt },
+          })
           .catch(() => undefined)
       }
       return reply.code(200).send(response)

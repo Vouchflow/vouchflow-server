@@ -323,9 +323,14 @@ model WebhookDelivery {
   endpointId String   @map("endpoint_id")
   event      String
   payload    String
-  status     String   @default("pending")  // pending | delivered | failed
+  // pending → still being attempted (initial state, or between retries).
+  // delivered → 2xx received. webhook_failed → all §7 retries exhausted.
+  status     String   @default("pending")
   attempts   Int      @default(0)
   lastAttemptAt DateTime? @map("last_attempt_at")
+  // When the 30s retry tick (services/webhooks.ts retryPendingWebhooks) should
+  // next attempt this delivery. NULL while a delivery is in-flight or terminal.
+  nextRetryAt DateTime? @map("next_retry_at")
   createdAt  DateTime @default(now()) @map("created_at")
 
   @@index([endpointId])
