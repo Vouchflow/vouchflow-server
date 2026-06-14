@@ -19,7 +19,12 @@ import Fastify, { FastifyInstance, FastifyPluginAsync } from 'fastify'
 import crypto from 'node:crypto'
 import { prisma } from '../../lib/prisma.js'
 
-export const HAS_DB = Boolean(process.env.DATABASE_URL)
+// Truthy when the vitest setup file's TCP probe found a live Postgres /
+// Redis. Integration suites gate themselves with this — see
+// `const d = HAS_DB ? describe : describe.skip`. The bare DATABASE_URL is
+// always set (Prisma needs it at import time), so it's not a reliable signal.
+export const HAS_DB    = Boolean(process.env._VF_TEST_HAS_DB)
+export const HAS_REDIS = Boolean(process.env._VF_TEST_HAS_REDIS)
 
 /** Mints a sandbox-keyed Customer row directly via Prisma — bypasses
  *  POST /v1/customers (which talks to the web service). */
