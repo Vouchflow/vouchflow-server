@@ -1,7 +1,6 @@
 import Fastify from 'fastify'
 import rateLimit from '@fastify/rate-limit'
 import cors from '@fastify/cors'
-import { redis } from './lib/redis.js'
 import responseHeaders from './plugins/responseHeaders.js'
 import enrollRoute from './routes/enroll.js'
 import verifyRoute from './routes/verify.js'
@@ -41,8 +40,14 @@ export async function buildApp() {
   // @fastify/rate-limit plugin. Global registration required first.
   // keyGenerator uses IP — customerId is not available at onRequest (before auth).
   // Per-route limits further scope by endpoint URL.
+  //
+  // Storage: in-process Map (the default when no `redis` is passed). With one
+  // API machine, the Redis-backed store was paying per-request Upstash
+  // commands for what amounts to a hash table — and ~90% of that traffic was
+  // scanner noise (/wp-admin, /.well-known, /sites/default/files…) returning
+  // 404. In-memory is correct here; if we ever scale to multiple API machines
+  // we revisit per-machine vs per-tenant limits separately.
   await fastify.register(rateLimit, {
-    redis,
     max: 1000,
     timeWindow: '1 minute',
     keyGenerator: (request) => `${request.ip}:${request.routeOptions.url}`,

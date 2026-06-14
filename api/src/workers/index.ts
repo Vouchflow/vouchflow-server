@@ -91,7 +91,16 @@ const anomalyWorker = new Worker(
       data: { riskScore, anomalyFlags },
     })
   },
-  { connection: redis, concurrency: 5 },
+  {
+    connection: redis,
+    concurrency: 5,
+    // Default is 5s — the worker re-issues a BRPOPLPUSH on the queue every
+    // 5 seconds when idle, which (across two queues) was a big chunk of our
+    // Upstash command bill. Lifting to 60s does NOT delay real jobs: pushing
+    // a job unblocks the BRPOP immediately. It only changes how often the
+    // worker re-polls when the queue is empty.
+    drainDelay: 60,
+  },
 )
 
 // ─── Webhook Delivery Worker (§7) ─────────────────────────────────────────────
@@ -163,6 +172,9 @@ const webhookWorker = new Worker(
   {
     connection: redis,
     concurrency: 10,
+    // See anomaly worker above: 60s idle-poll instead of 5s. BRPOPLPUSH
+    // unblocks on push, so webhook delivery latency is unchanged.
+    drainDelay: 60,
     settings: {
       // Custom backoff implements the §7 retry schedule
       backoffStrategy: (attemptsMade: number) => {
