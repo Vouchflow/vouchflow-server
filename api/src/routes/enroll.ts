@@ -96,6 +96,16 @@ const route: FastifyPluginAsync = async (fastify) => {
 
       // ── Public key uniqueness check ───────────────────────────────────────
       // §7: "if exists under different device_token, reject 409"
+      //
+      // The point of this check is to keep someone else from cloning a key
+      // and re-registering it under their own customer/app. Cross-tenant
+      // collision = 409, same-tenant re-token = legitimate (e.g. an SDK
+      // reset() that wiped the local token but the Android Keystore key
+      // survived the wipe — the upsert below correctly handles it). The
+      // older form blanket-409'd on ANY token mismatch, which made the
+      // sandbox-app→production-app device migration impossible to recover
+      // from on the integrator side; see issue #6.
+      //
       // Skip when body.public_key is empty (Web SDK enrollment — the key is
       // extracted from the WebAuthn attestation below; running the check on
       // an empty key would either be a no-op or false-positive against legacy
@@ -105,13 +115,23 @@ const route: FastifyPluginAsync = async (fastify) => {
         ? await prisma.device.findFirst({ where: { publicKey: body.public_key } })
         : null
       if (existingDevice && existingDevice.deviceToken !== (body.device_token ?? '')) {
-        await normalizeLatency(start, ENROLL_RESPONSE_TIME_MS)
-        return reply.code(409).send({
-          error: {
-            code: 'public_key_already_registered',
-            message: 'This public key is already registered to a different device token.',
-          },
-        })
+        const crossTenant =
+          existingDevice.customerId !== request.customerId ||
+          existingDevice.appId      !== request.appId
+        if (crossTenant) {
+          await normalizeLatency(start, ENROLL_RESPONSE_TIME_MS)
+          return reply.code(409).send({
+            error: {
+              code: 'public_key_already_registered',
+              message: 'This public key is already registered to a different device under another customer or app.',
+            },
+          })
+        }
+        // Same customer + same app, different device_token — re-token. Force
+        // the upsert below to target the existing row rather than try to
+        // create a duplicate (which would violate the deviceToken unique
+        // index in a different and less helpful way).
+        body.device_token = existingDevice.deviceToken
       }
 
       // ── Attestation validation ────────────────────────────────────────────

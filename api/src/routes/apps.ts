@@ -853,4 +853,101 @@ export default async function appsRoute(fastify: FastifyInstance) {
       return reply.code(204).send()
     },
   )
+
+  // ── POST /v1/customers/:id/apps/:appId/devices/transfer ─────────────────────
+  //
+  // Admin-keyed device transfer. Moves devices (and their verifications)
+  // from one App row to another inside the same customer. The intended use
+  // case is closing out a "sandbox-only App + production-only App" split
+  // when the integrator originally created two App rows for what the
+  // server-side model considers one app with two key types — see issue #6.
+  //
+  // The transfer is bounded by `customerId`: a device cannot be moved across
+  // customers via this endpoint. Doing that requires a different
+  // (purposefully-not-built) admin operation and a sales/legal touchpoint.
+  //
+  // Idempotent: passing `deviceTokens` that already belong to `appId` is a
+  // no-op for those tokens. Tokens that don't exist or belong to a different
+  // customer are skipped and reported back in `skipped`.
+  fastify.post<{
+    Params: { id: string; appId: string }
+    Body: { fromAppId: string; deviceTokens: string[] }
+  }>(
+    '/customers/:id/apps/:appId/devices/transfer',
+    { config: { rateLimit: { max: 30, timeWindow: '1 minute' } } },
+    async (request, reply) => {
+      if (!verifyAdminKey(request.headers.authorization)) {
+        return reply.code(401).send({ error: { code: 'unauthorized', message: 'Invalid admin key.' } })
+      }
+      const { id: customerId, appId: toAppId } = request.params
+      const { fromAppId, deviceTokens } = request.body
+
+      if (!fromAppId || typeof fromAppId !== 'string') {
+        return reply.code(400).send({ error: { code: 'invalid_request', message: 'fromAppId is required.' } })
+      }
+      if (!Array.isArray(deviceTokens) || deviceTokens.length === 0) {
+        return reply.code(400).send({ error: { code: 'invalid_request', message: 'deviceTokens must be a non-empty array.' } })
+      }
+      if (deviceTokens.length > 1000) {
+        return reply.code(400).send({ error: { code: 'invalid_request', message: 'deviceTokens may not exceed 1000 per request.' } })
+      }
+      if (fromAppId === toAppId) {
+        return reply.code(400).send({ error: { code: 'invalid_request', message: 'fromAppId and the destination appId in the URL must differ.' } })
+      }
+
+      // Both apps must exist under this customer. Refusing cross-customer
+      // transfers via this endpoint is intentional — see header comment.
+      const [fromApp, toApp] = await Promise.all([
+        prisma.app.findFirst({ where: { id: fromAppId, customerId } }),
+        prisma.app.findFirst({ where: { id: toAppId,   customerId } }),
+      ])
+      if (!fromApp) return reply.code(404).send({ error: { code: 'not_found', message: 'fromApp not found under this customer.' } })
+      if (!toApp)   return reply.code(404).send({ error: { code: 'not_found', message: 'destination app not found under this customer.' } })
+
+      // Look up the actual rows once so we can return precise skipped reasons
+      // rather than a single opaque count. At 1000 token cap this is one
+      // index-backed query of bounded size.
+      const found = await prisma.device.findMany({
+        where: { deviceToken: { in: deviceTokens }, customerId },
+        select: { id: true, deviceToken: true, appId: true },
+      })
+      const foundByToken = new Map(found.map((d) => [d.deviceToken, d]))
+
+      const transferable: string[] = []
+      const skipped: Array<{ deviceToken: string; reason: string }> = []
+      for (const token of deviceTokens) {
+        const row = foundByToken.get(token)
+        if (!row)                      { skipped.push({ deviceToken: token, reason: 'not_found' }); continue }
+        if (row.appId === toAppId)     { skipped.push({ deviceToken: token, reason: 'already_in_destination' }); continue }
+        if (row.appId !== fromAppId)   { skipped.push({ deviceToken: token, reason: 'not_in_source_app' }); continue }
+        transferable.push(token)
+      }
+
+      // Move devices + their verifications in one transaction so an outage
+      // mid-transfer leaves the dataset coherent. Verifications carry the
+      // app_id forward separately because they're the dashboard-visible
+      // audit trail; leaving them under fromAppId would make the destination
+      // app look like a ghost while the source still showed traffic.
+      if (transferable.length > 0) {
+        const transferableIds = found.filter((d) => transferable.includes(d.deviceToken)).map((d) => d.id)
+        await prisma.$transaction([
+          prisma.device.updateMany({
+            where: { deviceToken: { in: transferable }, customerId, appId: fromAppId },
+            data:  { appId: toAppId },
+          }),
+          prisma.verification.updateMany({
+            where: { deviceId: { in: transferableIds }, customerId, appId: fromAppId },
+            data:  { appId: toAppId },
+          }),
+        ])
+      }
+
+      return reply.send({
+        transferred: transferable.length,
+        skipped,
+        fromAppId,
+        toAppId,
+      })
+    },
+  )
 }
