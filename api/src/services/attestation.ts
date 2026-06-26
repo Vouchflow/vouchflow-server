@@ -391,11 +391,18 @@ const APP_ATTEST_NONCE_OID_TLV = Buffer.from('06092a864886f763640802', 'hex')
  * Extracts the 32-byte nonce from an Apple App Attest credential certificate.
  *
  * Extension OID 1.2.840.113635.100.8.2 value (inside the OCTET STRING extnValue wrapper):
- *   SEQUENCE { SEQUENCE { [1] EXPLICIT { OCTET STRING(32) } } }
+ *   SEQUENCE { [1] EXPLICIT { OCTET STRING(32) } }
+ *
+ * Verified against a real Apple attestation: the extnValue DER is
+ *   30 24  A1 22  04 20  <32-byte nonce>
+ * i.e. ONE SEQUENCE, then the [1] context tag, then the OCTET STRING — NOT a
+ * doubly-nested SEQUENCE. The earlier code unwrapped two SEQUENCEs and so
+ * returned null for every genuine attestation (→ nonce_extension_missing →
+ * confidence floored to low). See speakeasy.appattest golden-vector test.
  *
  * Returns null if the extension is absent or the structure is unexpected.
  */
-function extractAppAttestNonce(certDer: Buffer): Buffer | null {
+export function extractAppAttestNonce(certDer: Buffer): Buffer | null {
   const oidIdx = certDer.indexOf(APP_ATTEST_NONCE_OID_TLV)
   if (oidIdx === -1) return null
 
@@ -412,17 +419,11 @@ function extractAppAttestNonce(certDer: Buffer): Buffer | null {
   if (!extnValue) return null
   let inner = extnValue
 
-  // Outer SEQUENCE
+  // SEQUENCE wrapping the extension value
   if (inner[0] !== 0x30) return null
   const seq1 = derReadValue(inner, 0)
   if (!seq1) return null
   inner = seq1
-
-  // Inner SEQUENCE
-  if (inner[0] !== 0x30) return null
-  const seq2 = derReadValue(inner, 0)
-  if (!seq2) return null
-  inner = seq2
 
   // [1] EXPLICIT (tag 0xa1 = context-specific + constructed + tag 1)
   if (inner[0] !== 0xa1) return null
