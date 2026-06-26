@@ -194,11 +194,16 @@ d('POST /v1/enroll — idempotency replay protection', () => {
     expect(secondBody.device_token).not.toBe(firstBody.device_token)
   })
 
-  it('rejects a public_key already registered to a DIFFERENT device token (409)', async () => {
+  it('re-tokens a public_key re-registered under the SAME tenant (200, same device_token)', async () => {
+    // Same customer + app re-registering the same public_key with a new idem
+    // key and no device_token is a legitimate re-token (e.g. an SDK reset()
+    // that wiped the local token but the hardware key survived). The server
+    // returns the EXISTING device_token rather than 409. See enroll.ts and
+    // issue #6 (the older form blanket-409'd and made sandbox→prod device
+    // migration unrecoverable for integrators).
     const { sandboxWriteKey } = await createSandboxCustomer()
     const sharedPublicKey = freshPublicKey()
 
-    // First enrollment with idem key A — creates the device.
     const first = await app.inject({
       method: 'POST',
       url: '/v1/enroll',
@@ -211,13 +216,48 @@ d('POST /v1/enroll — idempotency replay protection', () => {
       },
     })
     expect(first.statusCode).toBe(200)
+    const firstToken = (first.json() as { device_token: string }).device_token
 
-    // Second enrollment with a DIFFERENT idem key but the same public_key,
-    // and no device_token in the body — that's the conflict.
     const second = await app.inject({
       method: 'POST',
       url: '/v1/enroll',
       headers: { authorization: `Bearer ${sandboxWriteKey}` },
+      payload: {
+        idempotency_key: `ik_${crypto.randomBytes(8).toString('hex')}`,
+        platform: 'android',
+        reason: 'fresh_enrollment',
+        public_key: sharedPublicKey,
+      },
+    })
+    expect(second.statusCode).toBe(200)
+    // Re-token: same device, same token — not a second device minted.
+    expect((second.json() as { device_token: string }).device_token).toBe(firstToken)
+  })
+
+  it('rejects a public_key already registered under a DIFFERENT tenant (409)', async () => {
+    // Cross-tenant collision (someone cloning a key under another customer) is
+    // still a hard 409 — only same-tenant re-registration re-tokens.
+    const tenantA = await createSandboxCustomer()
+    const tenantB = await createSandboxCustomer()
+    const sharedPublicKey = freshPublicKey()
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/v1/enroll',
+      headers: { authorization: `Bearer ${tenantA.sandboxWriteKey}` },
+      payload: {
+        idempotency_key: `ik_${crypto.randomBytes(8).toString('hex')}`,
+        platform: 'android',
+        reason: 'fresh_enrollment',
+        public_key: sharedPublicKey,
+      },
+    })
+    expect(first.statusCode).toBe(200)
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/v1/enroll',
+      headers: { authorization: `Bearer ${tenantB.sandboxWriteKey}` },
       payload: {
         idempotency_key: `ik_${crypto.randomBytes(8).toString('hex')}`,
         platform: 'android',
