@@ -211,12 +211,45 @@ const route: FastifyPluginAsync = async (fastify) => {
               buildAttestationConfig(app),
             )
             attestationVerified = result.verified
-          } catch {
-            // Non-fatal per §7
+            // Observability: an absent reason here means it silently fell to
+            // low confidence. Genuine devices that fail attestation should be
+            // rare; when they aren't, this `reason` is the whole diagnosis
+            // (e.g. nonce_extension_missing, rp_id_mismatch, counter_nonzero).
+            if (!result.verified) {
+              request.log.warn(
+                {
+                  appId: request.appId,
+                  platform: body.platform,
+                  reason: result.reason,
+                  hadToken: !!body.attestation.token,
+                  hadKeyId: !!body.attestation.key_id,
+                  hadCertChain: !!body.attestation.cert_chain,
+                },
+                'attestation rejected',
+              )
+            }
+          } catch (err) {
+            // Non-fatal per §7, but never silent: a thrown error here was
+            // previously invisible and indistinguishable from a clean reject.
             attestationVerified = false
+            request.log.warn(
+              { appId: request.appId, platform: body.platform, err: (err as Error).message },
+              'attestation threw',
+            )
           }
           confidenceCeiling = attestationVerified ? 'high' : 'medium'
         }
+      }
+
+      // Observability: a live mobile enroll that carries NO attestation at all
+      // (SDK didn't attach a token — e.g. App Attest unsupported, or a bug)
+      // also falls to low confidence. Distinguish it from a failed-validation
+      // reject above so "real iPhone → low" can be triaged from logs alone.
+      if (!request.isSandbox && body.platform !== 'web' && !body.attestation) {
+        request.log.warn(
+          { appId: request.appId, platform: body.platform },
+          'enroll without attestation (live mobile) — confidence will be low',
+        )
       }
 
       // If platform is 'web' and no webauthn_attestation was provided,
