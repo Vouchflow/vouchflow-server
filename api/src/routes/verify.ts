@@ -568,15 +568,7 @@ const route: FastifyPluginAsync = async (fastify) => {
 
         // Deliver OTP via Resend. Plaintext email used here and then discarded —
         // only the hash is persisted on the verification record.
-        // App-name lookup is best-effort — never delay or fail OTP delivery over it.
-        let appName: string | undefined
-        try {
-          const app = await prisma.app.findUnique({ where: { id: request.appId }, select: { name: true } })
-          appName = app?.name
-        } catch (err) {
-          request.log.warn({ appId: request.appId, err }, 'Failed to resolve app name for OTP branding')
-        }
-        await sendOtp({ email: body.email, emailHash: body.email_hash, otp, expiresAt: otpExpiresAt, appName })
+        await sendOtp({ email: body.email, emailHash: body.email_hash, otp, expiresAt: otpExpiresAt, appName: request.appName })
 
         return reply.code(200).send({
           fallback_session_id: fallbackSessionId,

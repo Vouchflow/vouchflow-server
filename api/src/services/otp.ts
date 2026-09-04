@@ -44,17 +44,12 @@ export async function sendOtp(params: {
 }): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
-    // In development without Resend configured, log OTP to console.
     // This must never happen in production — set RESEND_API_KEY.
-    console.warn('[otp] RESEND_API_KEY not set — OTP will not be delivered.', {
-      email: params.email,
-      otp: params.otp,
-      expiresAt: params.expiresAt.toISOString(),
-    })
+    console.warn('[otp] RESEND_API_KEY not set — OTP will not be delivered.')
     return
   }
 
-  const displayName = params.appName ?? 'Vouchflow'
+  const displayName = params.appName?.replace(/[\r\n\x00-\x1F\x7F]/g, '').trim() || 'Vouchflow'
   const resend = new Resend(apiKey)
   // Verified sending domain (vouchflow.dev) stays fixed — only the display
   // name changes so the email reads as the requesting app.

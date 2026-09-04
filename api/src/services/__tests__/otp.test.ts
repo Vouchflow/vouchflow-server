@@ -148,6 +148,25 @@ describe('sendOtp — app-name branding', () => {
     expect(call.text).toContain('Your Vouchflow verification code is: 654321')
   })
 
+  it('does not log plaintext email or OTP when delivery is unconfigured', async () => {
+    const { sendOtp } = await import('../otp.js')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    delete process.env.RESEND_API_KEY
+
+    try {
+      await sendOtp({
+        email: 'private@example.com',
+        emailHash: 'hash',
+        otp: '654321',
+        expiresAt: new Date(),
+      })
+
+      expect(warn).toHaveBeenCalledWith('[otp] RESEND_API_KEY not set — OTP will not be delivered.')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   it('keeps the verified vouchflow.dev sending domain regardless of app name', async () => {
     const { sendOtp } = await import('../otp.js')
     await sendOtp({
@@ -160,5 +179,22 @@ describe('sendOtp — app-name branding', () => {
 
     const call = sendMock.mock.calls[0][0]
     expect(call.from).toMatch(/noreply@vouchflow\.dev>$/)
+  })
+
+  it('strips control characters from branded email headers', async () => {
+    const { sendOtp } = await import('../otp.js')
+    await sendOtp({
+      email: 'user@example.com',
+      emailHash: 'hash',
+      otp: '111111',
+      expiresAt: new Date(),
+      appName: 'Speakeasy\r\nBcc: attacker@example.com',
+    })
+
+    const call = sendMock.mock.calls[0][0]
+    expect(call.from).toBe('SpeakeasyBcc: attacker@example.com <noreply@vouchflow.dev>')
+    expect(call.from).not.toMatch(/[\r\n]/)
+    expect(call.subject).toBe('Your SpeakeasyBcc: attacker@example.com verification code: 111111')
+    expect(call.subject).not.toMatch(/[\r\n]/)
   })
 })
