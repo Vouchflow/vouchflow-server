@@ -261,6 +261,8 @@ Never call this endpoint from mobile — it requires a read-scoped key that must
 
 `last_verification`: the most recent successful verification for this device, including email-OTP fallback completion, or `null` if the device has never successfully verified. Use `completed_at` to confirm freshness.
 
+`last_seen`: the most recently recorded device activity; a successful email-OTP fallback completion refreshes it.
+
 `risk_score`: 0–100, computed asynchronously after each verification. Higher scores indicate more anomalous device behaviour.  
 `anomaly_flags`: `velocity_anomaly` | `reinstall_anomaly` | `confidence_degradation`
 
