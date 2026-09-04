@@ -12,6 +12,7 @@ import verifyRoute from '../verify.js'
 import signRoute from '../sign.js'
 import deviceRoute from '../device.js'
 import { prisma } from '../../lib/prisma.js'
+import { hashOtp } from '../../services/otp.js'
 import {
   HAS_DB,
   buildTestApp,
@@ -120,6 +121,37 @@ d('cross-app isolation', () => {
     expect(res.statusCode).toBe(403)
     expect((res.json() as any).error.code).toBe('session_not_owned')
     expect((await prisma.verification.findUniqueOrThrow({ where: { id: session.id } })).state).toBe('INITIATED')
+  })
+
+  it('fallback completion with App B\'s key against App A\'s session → 403 without consuming OTP', async () => {
+    const { customer, appA, device, sandboxWriteKeyB } = await setup()
+    const session = await createVerification(customer.id, device.id, {
+      appId: appA.id,
+      state: 'FALLBACK',
+      completedAt: null,
+    })
+    await prisma.verification.update({
+      where: { id: session.id },
+      data: {
+        otpHash: hashOtp('123456'),
+        otpExpiresAt: new Date(Date.now() + 60_000),
+        otpAttempts: 0,
+      },
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/verify/${session.sessionId}/complete`,
+      headers: { authorization: `Bearer ${sandboxWriteKeyB}` },
+      payload: { device_token: device.deviceToken, otp: '123456' },
+    })
+
+    expect(res.statusCode).toBe(403)
+    expect((res.json() as any).error.code).toBe('session_not_owned')
+    expect(await prisma.verification.findUniqueOrThrow({ where: { id: session.id } })).toMatchObject({
+      state: 'FALLBACK',
+      otpAttempts: 0,
+    })
   })
 
   it('sign with App B\'s key against App A\'s device → 403 device_not_owned', async () => {

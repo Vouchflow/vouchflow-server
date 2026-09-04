@@ -191,6 +191,9 @@ const route: FastifyPluginAsync = async (fastify) => {
         if (!session) {
           return reply.code(404).send({ error: { code: 'session_not_found', message: 'Session not found.' } })
         }
+        if (session.customerId !== request.customerId || session.appId !== request.appId) {
+          return reply.code(403).send({ error: { code: 'session_not_owned', message: 'Session does not belong to this app.' } })
+        }
 
         // ── Step 2: State check ─────────────────────────────────────────────
         // If session is in FALLBACK state, treat as OTP completion (different schema).
