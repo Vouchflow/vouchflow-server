@@ -128,7 +128,7 @@ describe('sendOtp — app-name branding', () => {
 
     expect(sendMock).toHaveBeenCalledTimes(1)
     const call = sendMock.mock.calls[0][0]
-    expect(call.from).toBe('Speakeasy <noreply@vouchflow.dev>')
+    expect(call.from).toBe('"Speakeasy" <noreply@vouchflow.dev>')
     expect(call.subject).toBe('Your Speakeasy verification code: 123456')
     expect(call.text).toContain('Your Speakeasy verification code is: 123456')
   })
@@ -143,7 +143,7 @@ describe('sendOtp — app-name branding', () => {
     })
 
     const call = sendMock.mock.calls[0][0]
-    expect(call.from).toBe('Vouchflow <noreply@vouchflow.dev>')
+    expect(call.from).toBe('"Vouchflow" <noreply@vouchflow.dev>')
     expect(call.subject).toBe('Your Vouchflow verification code: 654321')
     expect(call.text).toContain('Your Vouchflow verification code is: 654321')
   })
@@ -181,6 +181,21 @@ describe('sendOtp — app-name branding', () => {
     expect(call.from).toMatch(/noreply@vouchflow\.dev>$/)
   })
 
+  it('quotes and escapes display-name delimiters in the from header', async () => {
+    const { sendOtp } = await import('../otp.js')
+    await sendOtp({
+      email: 'user@example.com',
+      emailHash: 'hash',
+      otp: '111111',
+      expiresAt: new Date(),
+      appName: 'Acme <billing@example.com> "Ops" \\ Team',
+    })
+
+    const call = sendMock.mock.calls[0][0]
+    expect(call.from).toBe('"Acme <billing@example.com> \\"Ops\\" \\\\ Team" <noreply@vouchflow.dev>')
+    expect(call.subject).toBe('Your Acme <billing@example.com> "Ops" \\ Team verification code: 111111')
+  })
+
   it('strips control characters from branded email headers', async () => {
     const { sendOtp } = await import('../otp.js')
     await sendOtp({
@@ -192,7 +207,7 @@ describe('sendOtp — app-name branding', () => {
     })
 
     const call = sendMock.mock.calls[0][0]
-    expect(call.from).toBe('SpeakeasyBcc: attacker@example.com <noreply@vouchflow.dev>')
+    expect(call.from).toBe('"SpeakeasyBcc: attacker@example.com" <noreply@vouchflow.dev>')
     expect(call.from).not.toMatch(/[\r\n]/)
     expect(call.subject).toBe('Your SpeakeasyBcc: attacker@example.com verification code: 111111')
     expect(call.subject).not.toMatch(/[\r\n]/)

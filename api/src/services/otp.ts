@@ -50,10 +50,11 @@ export async function sendOtp(params: {
   }
 
   const displayName = params.appName?.replace(/[\r\n\x00-\x1F\x7F]/g, '').trim() || 'Vouchflow'
+  const fromDisplayName = `"${displayName.replace(/(["\\])/g, '\\$1')}"`
   const resend = new Resend(apiKey)
   // Verified sending domain (vouchflow.dev) stays fixed — only the display
   // name changes so the email reads as the requesting app.
-  const from = process.env.EMAIL_FROM ?? `${displayName} <noreply@vouchflow.dev>`
+  const from = process.env.EMAIL_FROM ?? `${fromDisplayName} <noreply@vouchflow.dev>`
 
   await resend.emails.send({
     from,
