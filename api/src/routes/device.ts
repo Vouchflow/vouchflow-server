@@ -1,6 +1,7 @@
 import { FastifyPluginAsync } from 'fastify'
 import { prisma } from '../lib/prisma.js'
 import { makeApiKeyAuthPlugin } from '../plugins/apiKeyAuth.js'
+import { TERMINAL_VERIFIED_STATES } from '../lib/verificationState.js'
 
 // §7 GET /v1/device/{device_token}/reputation
 // Requires read-scoped API key (server-side only, never in mobile SDK)
@@ -34,10 +35,10 @@ const route: FastifyPluginAsync = async (fastify) => {
         return reply.code(404).send({ error: { code: 'device_not_found', message: 'Device token not found.' } })
       }
 
-      // Fetch most recent completed verification and network graph data in parallel
+      // Fetch the most recent terminal-verified result and network graph data in parallel
       const [recentVerification, networkDevice] = await Promise.all([
         prisma.verification.findFirst({
-          where: { deviceId: device.id, state: 'COMPLETED' },
+          where: { deviceId: device.id, state: { in: [...TERMINAL_VERIFIED_STATES] } },
           orderBy: { completedAt: 'desc' },
           select: { confidence: true, context: true, completedAt: true, biometricUsed: true, fallbackUsed: true },
         }),

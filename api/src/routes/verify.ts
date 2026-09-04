@@ -13,6 +13,7 @@ import { verifyWebAuthnAssertion, extractRpIdFromClientData } from '../services/
 import { scoreAnomaly } from '../services/anomaly.js'
 import { config } from '../config.js'
 import { loadAppPolicy, resolveVerifyMin } from '../services/appConfidencePolicy.js'
+import { TERMINAL_VERIFIED_STATES } from '../lib/verificationState.js'
 
 // §7 Session expiry: 60 seconds
 const SESSION_EXPIRY_SECONDS = 60
@@ -610,7 +611,7 @@ const route: FastifyPluginAsync = async (fastify) => {
         return reply.code(200).send({
           session_id: session.sessionId,
           session_state: session.state,
-          verified: session.state === 'COMPLETED' || session.state === 'FALLBACK_COMPLETE',
+          verified: (TERMINAL_VERIFIED_STATES as readonly string[]).includes(session.state),
           confidence: session.confidence,
           context: session.context,
           fallback_used: session.fallbackUsed,
@@ -764,6 +765,9 @@ async function handleFallbackComplete(
       completionResponse: responseBody as any,
     },
   })
+
+  // Update device last_seen — mirrors the primary completion path above.
+  await prisma.device.update({ where: { id: session.deviceId! }, data: { lastSeen: new Date() } })
 
   // Dispatch fallback_complete webhook
   await dispatchWebhook({ customerId: session.customerId, appId: session.appId }, {
