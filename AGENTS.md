@@ -6,12 +6,9 @@ This file is the project's committed home for project-intrinsic agent knowledge:
 
 ## Verification state
 
-A `Verification` is terminally "verified" in two distinct states: `COMPLETED`
-(biometric/signed-challenge) and `FALLBACK_COMPLETE` (email OTP fallback).
-Any lookup meaning "the device's last verified result" must match both, or
-completed fallbacks silently disappear from that lookup. Use
-`TERMINAL_VERIFIED_STATES` from `api/src/lib/verificationState.ts` rather than
-hardcoding `state: 'COMPLETED'` — see `device.ts` and `verify.ts` for usage.
+A `Verification` is terminally verified in `COMPLETED` and
+`FALLBACK_COMPLETE`. Use `TERMINAL_VERIFIED_STATES` from
+`api/src/lib/verificationState.ts` whenever a lookup needs verified states.
 
 - Integration tests need a real Postgres; see the docblock atop
   `api/src/__tests__/helpers/testApp.ts` for the local docker one-liner and

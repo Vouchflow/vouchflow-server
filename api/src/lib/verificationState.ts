@@ -1,6 +1,4 @@
-// A verification is "verified" once it reaches either terminal success
-// state: COMPLETED (biometric/signed-challenge) or FALLBACK_COMPLETE (email
-// OTP fallback). Every lookup that means "find the device's last verified
-// result" must match both — device.ts and verify.ts previously drifted on
-// this and email-fallback completions became invisible to device lookups.
+// Verification is terminally verified after biometric/signed-challenge
+// completion or email-OTP fallback completion. Reuse this list for lookups
+// that require verified states.
 export const TERMINAL_VERIFIED_STATES = ['COMPLETED', 'FALLBACK_COMPLETE'] as const

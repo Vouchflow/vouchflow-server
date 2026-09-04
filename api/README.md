@@ -259,7 +259,8 @@ Never call this endpoint from mobile — it requires a read-scoped key that must
 }
 ```
 
-`last_verification`: the most recent completed biometric verification for this device, or `null` if the device has never successfully verified. Use `completed_at` to confirm freshness.  
+`last_verification`: the most recent successful verification for this device, including email-OTP fallback completion, or `null` if the device has never successfully verified. Use `completed_at` to confirm freshness.
+
 `risk_score`: 0–100, computed asynchronously after each verification. Higher scores indicate more anomalous device behaviour.  
 `anomaly_flags`: `velocity_anomaly` | `reinstall_anomaly` | `confidence_degradation`
 
