@@ -17,6 +17,7 @@ import {
   buildTestApp,
   cleanDb,
   createSandboxCustomer,
+  createVerification,
 } from '../../__tests__/helpers/testApp.js'
 
 const d = HAS_DB ? describe : describe.skip
@@ -94,6 +95,31 @@ d('cross-app isolation', () => {
       payload: { device_token: device.deviceToken, context: 'login' },
     })
     expect(res.statusCode).toBe(200)
+  })
+
+  it('fallback with App B\'s key against App A\'s session → 403 without transitioning it', async () => {
+    const { customer, appA, device, sandboxWriteKeyB } = await setup()
+    const session = await createVerification(customer.id, device.id, {
+      appId: appA.id,
+      state: 'INITIATED',
+      completedAt: null,
+    })
+
+    const res = await app.inject({
+      method: 'POST',
+      url: `/v1/verify/${session.sessionId}/fallback`,
+      headers: { authorization: `Bearer ${sandboxWriteKeyB}` },
+      payload: {
+        device_token: device.deviceToken,
+        email: 'user@example.com',
+        email_hash: 'email-hash',
+        reason: 'biometric_failed',
+      },
+    })
+
+    expect(res.statusCode).toBe(403)
+    expect((res.json() as any).error.code).toBe('session_not_owned')
+    expect((await prisma.verification.findUniqueOrThrow({ where: { id: session.id } })).state).toBe('INITIATED')
   })
 
   it('sign with App B\'s key against App A\'s device → 403 device_not_owned', async () => {
