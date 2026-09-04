@@ -766,6 +766,9 @@ async function handleFallbackComplete(
     },
   })
 
+  // Update device last_seen — mirrors the primary completion path above.
+  await prisma.device.update({ where: { id: session.deviceId! }, data: { lastSeen: new Date() } })
+
   // Dispatch fallback_complete webhook
   await dispatchWebhook({ customerId: session.customerId, appId: session.appId }, {
     event: 'verification.fallback_complete',
