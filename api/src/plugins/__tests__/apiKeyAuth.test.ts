@@ -29,6 +29,7 @@ d('apiKeyAuth: write-scoped endpoint', () => {
       await fastify.register(makeApiKeyAuthPlugin('write'))
       fastify.post('/test', async (req) => ({
         customerId: req.customerId,
+        appName: req.appName,
         apiKeyId: req.apiKeyId,
         isSandbox: req.isSandbox,
         deprecated: req.apiKeyDeprecated,
@@ -38,6 +39,7 @@ d('apiKeyAuth: write-scoped endpoint', () => {
       await fastify.register(makeApiKeyAuthPlugin('read'))
       fastify.get('/test', async (req) => ({
         customerId: req.customerId,
+        appName: req.appName,
         apiKeyId: req.apiKeyId,
         isSandbox: req.isSandbox,
         deprecated: req.apiKeyDeprecated,
@@ -65,8 +67,9 @@ d('apiKeyAuth: write-scoped endpoint', () => {
       headers: { authorization: `Bearer ${sandboxWriteKey}` },
     })
     expect(res.statusCode).toBe(200)
-    const body = res.json() as { customerId: string; isSandbox: boolean; apiKeyId: string }
+    const body = res.json() as { customerId: string; appName: string; isSandbox: boolean; apiKeyId: string }
     expect(body.customerId).toBe(customer.id)
+    expect(body.appName).toBe(app.name)
     expect(body.isSandbox).toBe(true)
     expect(body.apiKeyId).toBe(`sandbox:${app.id}`)
   })
@@ -96,7 +99,7 @@ d('apiKeyAuth: write-scoped endpoint', () => {
   })
 
   it('accepts a live WRITE key on a read endpoint', async () => {
-    const { customer } = await createSandboxCustomer()
+    const { customer, app } = await createSandboxCustomer()
     const { rawKey } = await createLiveKey(customer.id, 'write')
     const res = await readApp.inject({
       method: 'GET',
@@ -104,7 +107,7 @@ d('apiKeyAuth: write-scoped endpoint', () => {
       headers: { authorization: `Bearer ${rawKey}` },
     })
     expect(res.statusCode).toBe(200)
-    expect(res.json()).toMatchObject({ customerId: customer.id })
+    expect(res.json()).toMatchObject({ customerId: customer.id, appName: app.name })
   })
 
   it('accepts a sandbox read key on a read endpoint', async () => {

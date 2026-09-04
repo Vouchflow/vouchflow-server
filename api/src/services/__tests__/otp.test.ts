@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import {
   generateOtp,
   hashOtp,
@@ -87,5 +87,129 @@ describe('hashOtp / verifyOtp', () => {
     const flipLast    = (correctHash.slice(0, -1) + '1')
     expect(verifyOtp('123456', flipFirst)).toBe(false)
     expect(verifyOtp('123456', flipLast)).toBe(false)
+  })
+})
+
+// sendOtp — app-name branding. Mocks the Resend SDK so we can assert on the
+// from/subject/text without hitting the network.
+const sendMock = vi.fn().mockResolvedValue({})
+vi.mock('resend', () => ({
+  Resend: class {
+    emails = { send: sendMock }
+  },
+}))
+
+describe('sendOtp — app-name branding', () => {
+  const originalApiKey = process.env.RESEND_API_KEY
+  const originalFrom = process.env.EMAIL_FROM
+
+  beforeEach(() => {
+    sendMock.mockClear()
+    process.env.RESEND_API_KEY = 'test_key'
+    delete process.env.EMAIL_FROM
+  })
+
+  afterEach(() => {
+    if (originalApiKey === undefined) delete process.env.RESEND_API_KEY
+    else process.env.RESEND_API_KEY = originalApiKey
+    if (originalFrom === undefined) delete process.env.EMAIL_FROM
+    else process.env.EMAIL_FROM = originalFrom
+  })
+
+  it('renders the requesting app name in from/subject/body when appName is given', async () => {
+    const { sendOtp } = await import('../otp.js')
+    await sendOtp({
+      email: 'user@example.com',
+      emailHash: 'hash',
+      otp: '123456',
+      expiresAt: new Date(),
+      appName: 'Speakeasy',
+    })
+
+    expect(sendMock).toHaveBeenCalledTimes(1)
+    const call = sendMock.mock.calls[0][0]
+    expect(call.from).toBe('"Speakeasy" <noreply@vouchflow.dev>')
+    expect(call.subject).toBe('Your Speakeasy verification code: 123456')
+    expect(call.text).toContain('Your Speakeasy verification code is: 123456')
+  })
+
+  it('falls back to Vouchflow branding when appName is absent', async () => {
+    const { sendOtp } = await import('../otp.js')
+    await sendOtp({
+      email: 'user@example.com',
+      emailHash: 'hash',
+      otp: '654321',
+      expiresAt: new Date(),
+    })
+
+    const call = sendMock.mock.calls[0][0]
+    expect(call.from).toBe('"Vouchflow" <noreply@vouchflow.dev>')
+    expect(call.subject).toBe('Your Vouchflow verification code: 654321')
+    expect(call.text).toContain('Your Vouchflow verification code is: 654321')
+  })
+
+  it('does not log plaintext email or OTP when delivery is unconfigured', async () => {
+    const { sendOtp } = await import('../otp.js')
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    delete process.env.RESEND_API_KEY
+
+    try {
+      await sendOtp({
+        email: 'private@example.com',
+        emailHash: 'hash',
+        otp: '654321',
+        expiresAt: new Date(),
+      })
+
+      expect(warn).toHaveBeenCalledWith('[otp] RESEND_API_KEY not set — OTP will not be delivered.')
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('keeps the verified vouchflow.dev sending domain regardless of app name', async () => {
+    const { sendOtp } = await import('../otp.js')
+    await sendOtp({
+      email: 'user@example.com',
+      emailHash: 'hash',
+      otp: '111111',
+      expiresAt: new Date(),
+      appName: 'Some App',
+    })
+
+    const call = sendMock.mock.calls[0][0]
+    expect(call.from).toMatch(/noreply@vouchflow\.dev>$/)
+  })
+
+  it('quotes and escapes display-name delimiters in the from header', async () => {
+    const { sendOtp } = await import('../otp.js')
+    await sendOtp({
+      email: 'user@example.com',
+      emailHash: 'hash',
+      otp: '111111',
+      expiresAt: new Date(),
+      appName: 'Acme <billing@example.com> "Ops" \\ Team',
+    })
+
+    const call = sendMock.mock.calls[0][0]
+    expect(call.from).toBe('"Acme <billing@example.com> \\"Ops\\" \\\\ Team" <noreply@vouchflow.dev>')
+    expect(call.subject).toBe('Your Acme <billing@example.com> "Ops" \\ Team verification code: 111111')
+  })
+
+  it('strips control characters from branded email headers', async () => {
+    const { sendOtp } = await import('../otp.js')
+    await sendOtp({
+      email: 'user@example.com',
+      emailHash: 'hash',
+      otp: '111111',
+      expiresAt: new Date(),
+      appName: 'Speakeasy\r\nBcc: attacker@example.com',
+    })
+
+    const call = sendMock.mock.calls[0][0]
+    expect(call.from).toBe('"SpeakeasyBcc: attacker@example.com" <noreply@vouchflow.dev>')
+    expect(call.from).not.toMatch(/[\r\n]/)
+    expect(call.subject).toBe('Your SpeakeasyBcc: attacker@example.com verification code: 111111')
+    expect(call.subject).not.toMatch(/[\r\n]/)
   })
 })

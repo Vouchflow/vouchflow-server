@@ -15,6 +15,7 @@ declare module 'fastify' {
   interface FastifyRequest {
     customerId: string
     appId: string
+    appName?: string
     apiKeyId: string
     apiKeyDeprecated: boolean
     isSandbox: boolean
@@ -81,6 +82,7 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
 
         request.customerId = app.customerId
         request.appId = app.id
+        request.appName = app.name
         request.apiKeyId = `sandbox:${app.id}`
         request.apiKeyDeprecated = false
         request.isSandbox = true
@@ -115,6 +117,7 @@ export function makeApiKeyAuthPlugin(requiredScope: ApiScope): FastifyPluginAsyn
 
       request.customerId = apiKey.customerId
       request.appId = apiKey.appId
+      request.appName = apiKey.app.name
       request.apiKeyId = apiKey.id
       request.apiKeyDeprecated = apiKey.deprecated
       request.isSandbox = false
