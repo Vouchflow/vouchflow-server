@@ -188,7 +188,7 @@ Initiates email OTP fallback when biometric verification is unavailable or fails
 }
 ```
 
-Pass `fallback_session_id` to `POST /v1/verify/:session_id/complete` (with `{ otp, device_token }`) to complete the fallback. Rate limits: 3 per 24h per device token, 5 per hour per email hash, 10 per hour per IP.
+Pass `fallback_session_id` to `POST /v1/verify/:session_id/complete` (with `{ otp, device_token }`) to complete the fallback. OTP emails use the authenticated app's name in their sender display name, subject, and body; by default they send from `noreply@vouchflow.dev`. Rate limits: 3 per 24h per device token, 5 per hour per email hash, 10 per hour per IP.
 
 ---
 
@@ -419,6 +419,7 @@ npm run worker:dev
 | `INTERNAL_HMAC_SECRET` | Yes | 32-byte hex secret for internal signing |
 | `WEBHOOK_SECRET_ENCRYPTION_KEY` | Yes | 32-byte hex key for encrypting webhook secrets at rest |
 | `RESEND_API_KEY` | Yes | Resend API key for OTP email delivery |
+| `EMAIL_FROM` | No | Complete sender override for OTP email. When set, it replaces the app-branded sender display name; the subject and body remain app-branded. |
 | `APPLE_APP_ATTEST_ROOT_CA` | Yes | Apple App Attest Root CA in PEM. Public cert, [Apple's docs](https://www.apple.com/certificateauthority/private/). Single value for the whole deployment. |
 | `GOOGLE_HARDWARE_ATTESTATION_ROOT_CA` | Yes | Google Hardware Attestation Root CA(s) in PEM, concatenated. Public certs, [AOSP source](https://android.googlesource.com/platform/system/security/+/refs/heads/main/keystore-engine/keystore_attestation_root.pem). |
 | `APPLE_TEAM_ID`, `APPLE_BUNDLE_ID` | No | Single-tenant fallback when `Customer.iosTeamId` / `iosBundleId` is null. |
