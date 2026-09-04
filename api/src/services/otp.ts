@@ -40,6 +40,7 @@ export async function sendOtp(params: {
   emailHash: string   // stored on the verification record
   otp: string
   expiresAt: Date
+  appName?: string    // requesting App's display name — brands the email; falls back to "Vouchflow"
 }): Promise<void> {
   const apiKey = process.env.RESEND_API_KEY
   if (!apiKey) {
@@ -53,15 +54,18 @@ export async function sendOtp(params: {
     return
   }
 
+  const displayName = params.appName ?? 'Vouchflow'
   const resend = new Resend(apiKey)
-  const from = process.env.EMAIL_FROM ?? 'Vouchflow <noreply@vouchflow.dev>'
+  // Verified sending domain (vouchflow.dev) stays fixed — only the display
+  // name changes so the email reads as the requesting app.
+  const from = process.env.EMAIL_FROM ?? `${displayName} <noreply@vouchflow.dev>`
 
   await resend.emails.send({
     from,
     to: params.email,
-    subject: `Your verification code: ${params.otp}`,
+    subject: `Your ${displayName} verification code: ${params.otp}`,
     text: [
-      `Your Vouchflow verification code is: ${params.otp}`,
+      `Your ${displayName} verification code is: ${params.otp}`,
       `This code expires in ${OTP_EXPIRY_MINUTES} minutes.`,
       `If you did not request this, ignore this email.`,
     ].join('\n\n'),
