@@ -181,10 +181,6 @@ const route: FastifyPluginAsync = async (fastify) => {
             state: 'COMPLETED',
             completedAt,
             biometricUsed: true,
-            completionResponse: {
-              device_token: device.deviceToken,
-              credential_id: device.credentialId!,
-            },
           },
         })
         if (updated.count === 0) return false

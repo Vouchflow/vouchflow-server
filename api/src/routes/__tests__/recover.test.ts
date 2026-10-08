@@ -105,6 +105,7 @@ d('device recovery', () => {
     expect(verification.state).toBe('COMPLETED')
     expect(verification.challengeConsumed).toBe(true)
     expect(verification.deviceId).toBe(device.id)
+    expect(verification.completionResponse).toBeNull()
   })
 
   it('returns 404 for another app’s or an unknown credential', async () => {
