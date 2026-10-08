@@ -29,6 +29,7 @@ api/
     routes/
       customers.ts     POST /v1/customers, PATCH, DELETE, live-keys
       enroll.ts        POST /v1/enroll (now accepts platform: 'web' with WebAuthn attestation)
+      recover.ts       POST /v1/device/recover/initiate, /complete (existing web passkey)
       verify.ts        POST /v1/verify, /verify/:id/complete, /verify/:id/fallback, GET /v1/verify/:id
       sign.ts          POST /v1/sign, /sign/:session_id/complete (Web SDK — JWS-attested payload signing)
       jwks.ts          GET /v1/.well-known/jwks.json (public verifier JWKS for sign assertions)
@@ -90,6 +91,8 @@ These endpoints require the `ADMIN_KEY` and are called by the web layer only —
 | Method | Path | Description |
 |---|---|---|
 | `POST` | `/v1/enroll` | Enroll a device. Supports `platform: 'ios' \| 'android' \| 'web'`. For web, `public_key` can be empty — the server extracts the COSE public key from the WebAuthn `attestation_object` inside `attestation.webauthn_attestation` |
+| `POST` | `/v1/device/recover/initiate` | Start recovery of an existing web device; see [API reference](api/README.md#recover-an-existing-web-device) |
+| `POST` | `/v1/device/recover/complete` | Prove possession of its passkey and retrieve the existing device token; see [API reference](api/README.md#recover-an-existing-web-device) |
 | `POST` | `/v1/verify` | Initiate a verification session — returns challenge. Web devices include `client_data_json`, `authenticator_data`, `credential_id` on the `/complete` call; cross-platform calls (web fields against an `ios` device or vice versa) are rejected with `422 platform_mismatch` |
 | `POST` | `/v1/verify/:session_id/complete` | Complete verification (signed challenge, WebAuthn assertion fields, or OTP fallback) |
 | `POST` | `/v1/verify/:session_id/fallback` | Request email OTP fallback for a session |
