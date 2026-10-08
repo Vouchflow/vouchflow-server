@@ -31,7 +31,7 @@ Two key scopes exist. The SDK uses the write key; your server uses the read key.
 
 | Scope | Used for |
 |---|---|
-| `write` | `POST` endpoints — enrollment, verification, fallback |
+| `write` | `POST` endpoints — enrollment, recovery, verification, fallback |
 | `read` | `GET` endpoints — reputation queries, session status |
 
 Every request must include:
@@ -87,6 +87,45 @@ Registers a device. Called automatically by the iOS SDK on first launch.
 ```
 
 Idempotent within a 24-hour window — replaying the same `idempotency_key` returns the original response. Rate limit: 10 requests/minute per IP.
+
+---
+
+### Recover an existing web device
+
+Use recovery when the browser has access to an existing passkey but has lost its local enrollment record. A new enrollment can replace that passkey, so recover the existing device before creating another credential. Both requests require a write-scoped key. Recovery only finds active web devices in the authenticated app and requires a valid assertion from the stored credential.
+
+**`POST /v1/device/recover/initiate`** accepts `{}` and returns:
+
+```json
+{
+  "session_id": "ses_...",
+  "challenge": "base64...",
+  "expires_at": "2026-04-11T12:01:00Z"
+}
+```
+
+Pass the challenge to `navigator.credentials.get()` with the existing passkey. The session expires after 60 seconds; rate limit: 100 requests/minute per IP.
+
+**`POST /v1/device/recover/complete`** accepts the assertion and returns the original device token and credential ID:
+
+```json
+{
+  "session_id": "ses_...",
+  "credential_id": "base64url...",
+  "client_data_json": "base64...",
+  "authenticator_data": "base64...",
+  "signed_challenge": "base64..."
+}
+```
+
+```json
+{
+  "device_token": "dvt_...",
+  "credential_id": "base64url..."
+}
+```
+
+The assertion fields are the credential's raw ID (base64url), client data JSON, authenticator data, and signature (each base64). `user_handle` is optional. A completed session cannot be reused. Errors include `400 invalid_request`, `404 session_not_found` or `device_not_found`, `409 invalid_session_type` or `invalid_session_state`, `410 session_expired`, and `422 invalid_signature`. Rate limit: 10 requests/minute per IP.
 
 ---
 

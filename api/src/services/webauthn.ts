@@ -48,7 +48,7 @@ export interface WebAuthnAttestationResult {
 export interface VerifyWebAuthnAssertionParams {
   /** Device's stored public key (base64 SPKI DER) */
   publicKey: string
-  /** The challenge from POST /v1/verify (base64) */
+  /** The challenge from the verification or device recovery initiation endpoint (base64) */
   challenge: string
   /** clientDataJSON from the WebAuthn assertion (base64) */
   clientDataJSON: string
