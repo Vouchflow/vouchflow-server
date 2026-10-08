@@ -5,6 +5,7 @@ import responseHeaders from './plugins/responseHeaders.js'
 import enrollRoute from './routes/enroll.js'
 import verifyRoute from './routes/verify.js'
 import signRoute from './routes/sign.js'
+import recoverRoute from './routes/recover.js'
 import jwksRoute from './routes/jwks.js'
 import deviceRoute from './routes/device.js'
 import customerRoute from './routes/customers.js'
@@ -57,6 +58,7 @@ export async function buildApp() {
   await fastify.register(enrollRoute,  { prefix: '/v1' })
   await fastify.register(verifyRoute,  { prefix: '/v1' })
   await fastify.register(signRoute,    { prefix: '/v1' })
+  await fastify.register(recoverRoute, { prefix: '/v1' })
   await fastify.register(jwksRoute)    // No prefix — /.well-known/jwks.json is a standard location
   await fastify.register(deviceRoute,  { prefix: '/v1' })
   await fastify.register(customerRoute, { prefix: '/v1' })
